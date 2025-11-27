@@ -270,6 +270,23 @@ async def query_detailed(request: DetailedQueryRequest):
             # Build process information
             process = None
             if request.include_process:
+                # Combine sources (main article) with references for visualization
+                all_sources = retrieval_result['sources'].copy()
+                
+                # Get references from hierarchical retriever context data
+                from src.retrieval.hierarchical_retriever import HierarchicalRetriever
+                context_data = retriever._build_context_with_references(
+                    retrieval_result['selected_article']['articleId']
+                )
+                
+                # Add references to sources for graph visualization
+                for ref in context_data.get('references', []):
+                    all_sources.append({
+                        'type': ref['type'],
+                        'id': ref['id'],
+                        'title': ref.get('title', '')
+                    })
+                
                 process = {
                     "candidates_count": retrieval_result['metadata']['candidates_count'],
                     "articles_evaluated": retrieval_result['metadata']['articles_count'],
@@ -277,22 +294,49 @@ async def query_detailed(request: DetailedQueryRequest):
                         "id": retrieval_result['selected_article']['articleId'],
                         "title": retrieval_result['selected_article']['title']
                     },
-                    "references": retrieval_result['metadata'].get('references_count', 0),
-                    "sources": retrieval_result['sources']
+                    "references": len(context_data.get('references', [])),
+                    "sources": all_sources
                 }
             
             driver.close()
+            
+            # Build citations including main article and references
+            citations = [{
+                "clause_id": retrieval_result['selected_article']['articleId'],
+                "title": retrieval_result['selected_article']['title'],
+                "text": retrieval_result['selected_article']['text'][:200]
+            }]
+            
+            # Add referenced clauses to citations
+            for ref in context_data.get('references', []):
+                # Get full text for the reference if available
+                ref_text = ""
+                with GraphDatabase.driver(
+                    settings.neo4j_uri,
+                    auth=(settings.neo4j_username, settings.neo4j_password)
+                ) as temp_driver:
+                    with temp_driver.session() as temp_session:
+                        if ref['type'] == 'Article':
+                            ref_result = temp_session.run("""
+                                MATCH (a:Article {articleId: $ref_id})
+                                RETURN a.text AS text
+                            """, ref_id=ref['id'])
+                            record = ref_result.single()
+                            if record:
+                                ref_text = record['text'][:200] if record['text'] else ""
+                
+                citations.append({
+                    "clause_id": ref['id'],
+                    "title": ref.get('title', ''),
+                    "text": ref_text
+                })
             
             return DetailedQueryResponse(
                 question=request.question,
                 answer=answer,
                 intent="clause_detail",
                 confidence=0.9,
-                citations=[{
-                    "clause_id": retrieval_result['selected_article']['articleId'],
-                    "title": retrieval_result['selected_article']['title'],
-                    "text": retrieval_result['selected_article']['text'][:200]
-                }],
+                citations=citations,
                 process=process
             )
         else:
