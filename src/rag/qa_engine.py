@@ -29,7 +29,7 @@ class PolicyQAEngine:
             Dictionary with answer and metadata
         """
         return self.pipeline.query(question)
-    
+        
     def batch_query(self, questions: List[str]) -> List[Dict[str, Any]]:
         """
         Answer multiple questions

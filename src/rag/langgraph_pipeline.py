@@ -57,7 +57,7 @@ Return ONLY a JSON object:
   "query_scope": "product_overview" or "clause_detail",
   "reasoning": "brief explanation of why"
 }}
-"""
+    """
     
     QUERY_UNDERSTANDING_PROMPT = """You are an expert at analyzing insurance policy questions.
 
@@ -320,7 +320,7 @@ Provide your answer in the following JSON format:
         # Retrieve using hierarchical strategy
         try:
             result = self.hierarchical_retriever.retrieve(question, top_k=5)
-            
+        
             # Convert hierarchical result to chunks format for answer synthesis
             if result['selected_article']:
                 # Create a single "chunk" with full context
@@ -408,7 +408,7 @@ Provide your answer in the following JSON format:
             article = chunks[0].get('article', {})
             sources = chunks[0].get('sources', [])
             references = chunks[0].get('references', [])
-            
+        
             # Use LLM to generate answer based on hierarchical context
             hierarchical_prompt = f"""당신은 보험약관 전문가입니다. 다음 약관 내용을 바탕으로 사용자 질문에 정확하고 친절하게 답변해주세요.
 

@@ -73,7 +73,7 @@ class HybridRetriever:
             raise
     
     def _vector_search(self,
-                      query_embedding: List[float],
+                       query_embedding: List[float],
                        top_k: int,
                        filter_clause_type: Optional[str] = None) -> List[Dict[str, Any]]:
         """
@@ -92,13 +92,13 @@ class HybridRetriever:
                 # Try to use vector index if available
                 if filter_clause_type:
                     cypher_query = """
-            CALL db.index.vector.queryNodes('paragraph_embedding_index', $top_k, $query_embedding)
-            YIELD node, score
-            MATCH (node)<-[:HAS_PARAGRAPH]-(c:PolicyClause)
+                        CALL db.index.vector.queryNodes('paragraph_embedding_index', $top_k, $query_embedding)
+                        YIELD node, score
+                        MATCH (node)<-[:HAS_PARAGRAPH]-(c:PolicyClause)
                         WHERE c.clauseType = $clause_type
                         RETURN node, score, c
-            ORDER BY score DESC
-            """
+                        ORDER BY score DESC
+                    """
                     result = session.run(
                         cypher_query,
                         top_k=top_k,
@@ -107,11 +107,11 @@ class HybridRetriever:
                     )
                 else:
                     cypher_query = """
-            CALL db.index.vector.queryNodes('paragraph_embedding_index', $top_k, $query_embedding)
-            YIELD node, score
-            MATCH (node)<-[:HAS_PARAGRAPH]-(c:PolicyClause)
+                        CALL db.index.vector.queryNodes('paragraph_embedding_index', $top_k, $query_embedding)
+                        YIELD node, score
+                        MATCH (node)<-[:HAS_PARAGRAPH]-(c:PolicyClause)
                         RETURN node, score, c
-            ORDER BY score DESC
+                        ORDER BY score DESC
                     """
                     result = session.run(
                         cypher_query,

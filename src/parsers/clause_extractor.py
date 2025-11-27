@@ -153,7 +153,7 @@ class ClauseExtractor:
             Basic hint or None (will be refined by LLM)
         """
         title_lower = title.lower()
-        
+            
         # Very basic hints from common title patterns
         if "보상하지" in title_lower or "면책" in title_lower:
             return "Exclusion"

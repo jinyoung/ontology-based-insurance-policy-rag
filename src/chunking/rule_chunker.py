@@ -171,7 +171,7 @@ class RuleBasedChunker:
                 current_chunk_size = para_size
                 chunk_counter += 1
             else:
-                current_chunk_text.append(para)
+            current_chunk_text.append(para)
                 current_chunk_size += para_size
         
         # Save last chunk
