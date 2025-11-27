@@ -286,7 +286,9 @@ def main():
             
             logger.info(f"  ✅ {len(all_items)}개 호 로딩 완료")
             
-            # Create cross-references (Paragraph/Item → Article/Paragraph/Item)
+            # Create cross-references (Paragraph/Item → Paragraph/Item/Article)
+            # - 구체적 항/호 명시: Paragraph/Item로 연결
+            # - 조만 언급: Article로 연결
             logger.info(f"  상호 참조 관계 생성: {len(all_references)}개")
             refs_created = 0
             
@@ -304,14 +306,20 @@ def main():
                     
                     # Determine to_node label and property
                     if ref['to_type'] == 'clause':
+                        # 조만 언급된 경우: Article로 연결
                         to_label = 'Article'
                         to_prop = 'articleId'
+                        to_id = ref['to_id']
                     elif ref['to_type'] == 'paragraph':
+                        # 구체적 항 명시: Paragraph로 연결
                         to_label = 'Paragraph'
                         to_prop = 'paragraphId'
+                        to_id = ref['to_id']
                     elif ref['to_type'] == 'item':
+                        # 구체적 호 명시: Item로 연결
                         to_label = 'Item'
                         to_prop = 'itemId'
+                        to_id = ref['to_id']
                     else:
                         continue
                     
@@ -322,9 +330,9 @@ def main():
                         MERGE (from_node)-[:REFERS_TO]->(to_node)
                     """
                     
-                    session.run(query, from_id=ref['from_id'], to_id=ref['to_id'])
+                    session.run(query, from_id=ref['from_id'], to_id=to_id)
                     refs_created += 1
-                    logger.debug(f"    참조: {ref['from_id']} → {ref['to_id']}")
+                    logger.debug(f"    참조: {ref['from_id']} → {to_id} ({to_label})")
                     
                 except Exception as e:
                     logger.warning(f"  ✗ 참조 관계 생성 실패 ({ref['from_id']} -> {ref['to_id']}): {e}")
