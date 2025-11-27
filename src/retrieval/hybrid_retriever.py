@@ -63,11 +63,11 @@ class HybridRetriever:
     def _generate_embedding(self, text: str) -> List[float]:
         """Generate embedding for query text"""
         try:
-        response = self.openai_client.embeddings.create(
-            model=settings.embedding_model,
-            input=text
-        )
-        return response.data[0].embedding
+            response = self.openai_client.embeddings.create(
+                model=settings.embedding_model,
+                input=text
+            )
+            return response.data[0].embedding
         except Exception as e:
             logger.error(f"Error generating embedding: {e}")
             raise
@@ -99,13 +99,13 @@ class HybridRetriever:
                         RETURN node, score, c
             ORDER BY score DESC
             """
-                result = session.run(
+                    result = session.run(
                         cypher_query,
                         top_k=top_k,
-                    query_embedding=query_embedding,
+                        query_embedding=query_embedding,
                         clause_type=filter_clause_type
-                )
-        else:
+                    )
+                else:
                     cypher_query = """
             CALL db.index.vector.queryNodes('paragraph_embedding_index', $top_k, $query_embedding)
             YIELD node, score

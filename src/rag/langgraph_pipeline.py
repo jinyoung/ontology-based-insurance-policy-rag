@@ -10,6 +10,7 @@ import json
 
 from src.config.settings import settings
 from src.retrieval.hybrid_retriever import HybridRetriever
+from src.retrieval.hierarchical_retriever import HierarchicalRetriever
 
 
 class GraphRAGState(TypedDict):
@@ -132,12 +133,21 @@ Provide your answer in the following JSON format:
             api_key=settings.openai_api_key
         )
         
+        # Hybrid retriever for product overview
         self.retriever = HybridRetriever(
             uri=settings.neo4j_uri,
             username=settings.neo4j_username,
             password=settings.neo4j_password,
             alpha=settings.hybrid_alpha
         )
+        
+        # Hierarchical retriever for clause detail
+        from neo4j import GraphDatabase
+        neo4j_driver = GraphDatabase.driver(
+            settings.neo4j_uri,
+            auth=(settings.neo4j_username, settings.neo4j_password)
+        )
+        self.hierarchical_retriever = HierarchicalRetriever(neo4j_driver)
         
         # Build the graph
         self.graph = self._build_graph()
@@ -296,37 +306,40 @@ Provide your answer in the following JSON format:
     
     def _clause_retrieval_node(self, state: GraphRAGState) -> GraphRAGState:
         """
-        Node 2b: Retrieve relevant chunks using hybrid retrieval (for clause detail)
+        Node 2b: Retrieve relevant chunks using hierarchical retrieval (for clause detail)
+        
+        Strategy:
+        1. Vector search to find top-k nodes
+        2. LLM selects most relevant Article
+        3. Builds context with REFERS_TO connections
         """
-        logger.info("📚 Clause Retrieval Node")
+        logger.info("📚 Clause Retrieval Node (Hierarchical)")
         
         question = state["question"]
-        intent = state.get("intent", "general")
         
-        # Determine clause type filter
-        clause_type_map = {
-            "coverage": "Coverage",
-            "exclusion": "Exclusion",
-            "condition": "Condition",
-            "definition": "Definition"
-        }
-        
-        filter_clause_type = clause_type_map.get(intent)
-        
-        # Retrieve chunks
+        # Retrieve using hierarchical strategy
         try:
-            results = self.retriever.retrieve(
-                query=question,
-                top_k=settings.retrieval_top_k,
-                intent=intent,
-                filter_clause_type=filter_clause_type
-            )
+            result = self.hierarchical_retriever.retrieve(question, top_k=5)
             
-            state["retrieved_chunks"] = results
-            logger.info(f"Retrieved {len(results)} chunks")
+            # Convert hierarchical result to chunks format for answer synthesis
+            if result['selected_article']:
+                # Create a single "chunk" with full context
+                chunks = [{
+                    'type': 'hierarchical',
+                    'article': result['selected_article'],
+                    'context': result['context'],
+                    'sources': result['sources'],
+                    'references': result.get('metadata', {}).get('references', []),
+                    'metadata': result['metadata']
+                }]
+                state["retrieved_chunks"] = chunks
+                logger.info(f"Retrieved article: {result['selected_article']['articleId']} with {len(result['sources'])} sources")
+            else:
+                state["retrieved_chunks"] = []
+                logger.warning("No article selected")
             
         except Exception as e:
-            logger.error(f"Error in retrieval: {e}")
+            logger.error(f"Error in hierarchical retrieval: {e}")
             state["retrieved_chunks"] = []
         
         return state
@@ -351,30 +364,95 @@ Provide your answer in the following JSON format:
         if chunks and chunks[0].get('type') == 'product_overview':
             logger.info("Synthesizing answer from product overview")
             
-            product_data = chunks[0].get('product', {})
+            product_data = chunks[0].get('product')
+            if not product_data:
+                product_data = {}
+            
             matched_questions = chunks[0].get('matched_questions', [])
             
             # Generate answer based on product summary
             answer_parts = []
             answer_parts.append(f"**{product_data.get('name', '보험상품')}**")
             answer_parts.append("")
-            answer_parts.append(product_data.get('summary', '상품 정보를 찾을 수 없습니다.'))
+            summary = product_data.get('summary')
+            answer_parts.append(summary if summary else '상품 정보를 찾을 수 없습니다.')
             
             if matched_questions:
                 answer_parts.append("")
                 answer_parts.append("💡 관련 질문:")
                 for i, mq in enumerate(matched_questions[:3], 1):
-                    answer_parts.append(f"  {i}. {mq['question']}")
+                    if mq and isinstance(mq, dict) and 'question' in mq:
+                        answer_parts.append(f"  {i}. {mq['question']}")
             
             state["answer"] = "\n".join(answer_parts)
+            
+            # Safe citation handling
+            summary_text = product_data.get('summary', '')
+            citation_text = summary_text[:100] if summary_text else ''
+            
             state["citations"] = [{
                 "clause_id": "상품정보",
                 "title": product_data.get('name', ''),
-                "text": product_data.get('summary', '')[:100]
+                "text": citation_text
             }]
             state["confidence"] = chunks[0].get('hybrid_score', 0.9)
             
             logger.info(f"Product overview answer generated with confidence: {state['confidence']}")
+            return state
+        
+        # Check if hierarchical result
+        if chunks and chunks[0].get('type') == 'hierarchical':
+            logger.info("Synthesizing answer from hierarchical retrieval")
+            
+            context = chunks[0].get('context', '')
+            article = chunks[0].get('article', {})
+            sources = chunks[0].get('sources', [])
+            references = chunks[0].get('references', [])
+            
+            # Use LLM to generate answer based on hierarchical context
+            hierarchical_prompt = f"""당신은 보험약관 전문가입니다. 다음 약관 내용을 바탕으로 사용자 질문에 정확하고 친절하게 답변해주세요.
+
+약관 내용:
+{context}
+
+질문: {question}
+
+답변:"""
+            
+            try:
+                response = self.llm.invoke(hierarchical_prompt)
+                answer = response.content
+                
+                # Add citations
+                citations = []
+                citations.append({
+                    "clause_id": article.get('articleId', 'N/A'),
+                    "title": article.get('title', 'N/A'),
+                    "text": article.get('text', '')[:100]
+                })
+                
+                for ref in references[:3]:
+                    citations.append({
+                        "clause_id": ref.get('id', 'N/A'),
+                        "title": ref.get('title', ''),
+                        "text": f"[참조] {ref.get('type', '')}"
+                    })
+                
+                state["answer"] = answer
+                state["citations"] = citations
+                state["confidence"] = 0.9
+                
+                logger.info(f"Hierarchical answer generated with {len(citations)} citations")
+                
+            except Exception as e:
+                logger.error(f"Error generating hierarchical answer: {e}")
+                state["answer"] = f"**{article.get('title', '조항')}**\n\n" + context[:500]
+                state["citations"] = [{
+                    "clause_id": article.get('articleId', 'N/A'),
+                    "title": article.get('title', 'N/A')
+                }]
+                state["confidence"] = 0.7
+            
             return state
         
         # Clause detail answer (기존 로직)
@@ -479,6 +557,9 @@ Provide your answer in the following JSON format:
     def close(self):
         """Clean up resources"""
         self.retriever.close()
+        # Hierarchical retriever uses neo4j driver which should be closed
+        if hasattr(self, 'hierarchical_retriever') and hasattr(self.hierarchical_retriever, 'driver'):
+            self.hierarchical_retriever.driver.close()
         logger.info("Pipeline closed")
 
 
