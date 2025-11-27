@@ -332,6 +332,113 @@ class HybridRetriever:
             logger.debug(f"Manual vector search returned {len(results)} results")
             return results
     
+    def retrieve_product_overview(self, query: str) -> List[Dict[str, Any]]:
+        """
+        Retrieve product-level information using HyDE (Hypothetical Document Embeddings)
+        
+        Searches InsuranceProduct summary and HypotheticalQuestion nodes
+        
+        Args:
+            query: User query about the product
+            
+        Returns:
+            List with product summary and matching HyDE questions
+        """
+        # Generate query embedding
+        query_embedding = self._generate_embedding(query)
+        
+        results = []
+        
+        with self.driver.session() as session:
+            try:
+                # Search HypotheticalQuestion nodes (HyDE)
+                hyde_query = """
+                    WITH $query_embedding AS queryVec
+                    MATCH (prod:InsuranceProduct)-[:HAS_HYPOTHETICAL_QUESTION]->(hq:HypotheticalQuestion)
+                    WITH hq, prod,
+                         reduce(dot = 0.0, i IN range(0, size(queryVec)-1) | 
+                            dot + queryVec[i] * hq.embedding[i]) AS dotProduct,
+                         sqrt(reduce(sum = 0.0, i IN range(0, size(queryVec)-1) | 
+                            sum + queryVec[i] * queryVec[i])) AS queryMag,
+                         sqrt(reduce(sum = 0.0, i IN range(0, size(hq.embedding)-1) | 
+                            sum + hq.embedding[i] * hq.embedding[i])) AS docMag
+                    WITH hq, prod, dotProduct / (queryMag * docMag) AS similarity
+                    WHERE similarity > 0.7
+                    RETURN hq.question as question, 
+                           hq.questionId as question_id,
+                           prod.code as product_code,
+                           prod.name as product_name,
+                           prod.summary as product_summary,
+                           similarity
+                    ORDER BY similarity DESC
+                    LIMIT 3
+                """
+                
+                hyde_results = session.run(
+                    hyde_query,
+                    query_embedding=query_embedding
+                )
+                
+                hyde_matches = list(hyde_results)
+                
+                if hyde_matches:
+                    # Found matching HyDE questions - return product info
+                    top_match = hyde_matches[0]
+                    
+                    result = {
+                        'type': 'product_overview',
+                        'product': {
+                            'code': top_match['product_code'],
+                            'name': top_match['product_name'],
+                            'summary': top_match['product_summary']
+                        },
+                        'matched_questions': [
+                            {
+                                'question': m['question'],
+                                'similarity': float(m['similarity'])
+                            }
+                            for m in hyde_matches
+                        ],
+                        'hybrid_score': float(hyde_matches[0]['similarity'])
+                    }
+                    
+                    results.append(result)
+                    logger.info(f"Found {len(hyde_matches)} matching HyDE questions")
+                else:
+                    # Fallback: Direct product summary search
+                    logger.info("No HyDE matches, using product summary directly")
+                    
+                    product_query = """
+                        MATCH (prod:InsuranceProduct)
+                        RETURN prod.code as code,
+                               prod.name as name,
+                               prod.summary as summary
+                        LIMIT 1
+                    """
+                    
+                    prod_result = session.run(product_query)
+                    prod_record = prod_result.single()
+                    
+                    if prod_record:
+                        result = {
+                            'type': 'product_overview',
+                            'product': {
+                                'code': prod_record['code'],
+                                'name': prod_record['name'],
+                                'summary': prod_record['summary']
+                            },
+                            'matched_questions': [],
+                            'hybrid_score': 0.8
+                        }
+                        results.append(result)
+                
+            except Exception as e:
+                logger.error(f"Error in product overview retrieval: {e}")
+                import traceback
+                traceback.print_exc()
+        
+        return results
+    
     def close(self):
         """Close the driver connection"""
         self.driver.close()

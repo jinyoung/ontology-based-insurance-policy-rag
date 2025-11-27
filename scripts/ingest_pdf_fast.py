@@ -50,6 +50,8 @@ def ingest_pdf_fast(pdf_path: str,
         'total_clauses': 0,
         'processed_clauses': 0,
         'clause_summaries': 0,
+        'product_summary': False,
+        'hyde_questions': 0,
         'chunks': 0,
         'embeddings': 0,
         'nodes_created': 0
@@ -355,6 +357,115 @@ def ingest_pdf_fast(pdf_path: str,
             
             logger.info(f"  ✅ 청크 로딩 완료")
         
+        # Generate product summary from clause summaries
+        if clause_summaries:
+            logger.info(f"\n  상품 전체 요약 생성 중...")
+            
+            # Combine all clause summaries
+            all_summaries = "\n\n".join([
+                f"[{s['title']}]\n{s['summary']}"
+                for s in clause_summaries
+            ])
+            
+            try:
+                # Generate product-level summary
+                product_summary_response = openai_client.chat.completions.create(
+                    model=settings.llm_model,
+                    messages=[
+                        {"role": "system", "content": "당신은 보험약관 전문가입니다. 주어진 조항 요약들을 종합하여 보험상품 전체를 3-5문장으로 명확하게 요약하세요. 상품의 주요 특징, 보장 내용, 핵심 조건을 포함해야 합니다."},
+                        {"role": "user", "content": f"다음은 '{product_name}'의 조항 요약들입니다. 이를 종합하여 보험상품 전체를 요약하세요:\n\n{all_summaries}"}
+                    ],
+                    temperature=0.3,
+                    max_tokens=500
+                )
+                
+                product_summary = product_summary_response.choices[0].message.content.strip()
+                logger.info(f"  → 상품 요약: {product_summary[:100]}...")
+                
+                # Generate embedding for product summary
+                product_embedding_response = openai_client.embeddings.create(
+                    model=settings.embedding_model,
+                    input=product_summary
+                )
+                product_embedding = product_embedding_response.data[0].embedding
+                
+                # Generate HyDE: Hypothetical questions for product
+                logger.info(f"  → HyDE 질의 생성 중...")
+                
+                hyde_response = openai_client.chat.completions.create(
+                    model=settings.llm_model,
+                    messages=[
+                        {"role": "system", "content": "당신은 보험 전문가입니다. 주어진 보험 상품 요약을 보고, 고객이나 상담원이 이 상품에 대해 물어볼 수 있는 다양한 질문들을 생성하세요. 질문은 상품의 특징, 보장 내용, 가입 조건, 보험료, 해지 환급 등 다양한 측면을 다루어야 합니다."},
+                        {"role": "user", "content": f"다음 보험 상품에 대해 고객이 물어볼 만한 질문 8개를 생성하세요. 각 질문은 한 줄로 작성하고, 번호 없이 질문만 작성하세요:\n\n상품명: {product_name}\n\n요약:\n{product_summary}\n\n질문 형식 예시:\n- 이 보험은 어떤 상품인가요?\n- 주요 보장 내용은 무엇인가요?\n\n8개의 질문을 생성해주세요 (각 줄마다 하나씩):"}
+                    ],
+                    temperature=0.7,
+                    max_tokens=500
+                )
+                
+                hyde_questions_text = hyde_response.choices[0].message.content.strip()
+                # Parse questions (one per line, removing empty lines and numbers)
+                hyde_questions = [
+                    q.strip().lstrip('0123456789.-) ') 
+                    for q in hyde_questions_text.split('\n') 
+                    if q.strip() and len(q.strip()) > 10
+                ]
+                
+                logger.info(f"  → {len(hyde_questions)}개 HyDE 질의 생성 완료")
+                for i, q in enumerate(hyde_questions[:3], 1):
+                    logger.info(f"     {i}. {q}")
+                if len(hyde_questions) > 3:
+                    logger.info(f"     ... 외 {len(hyde_questions)-3}개")
+                
+                # Generate embeddings for each hypothetical question
+                hyde_embeddings = []
+                for i, question in enumerate(hyde_questions, 1):
+                    try:
+                        emb_response = openai_client.embeddings.create(
+                            model=settings.embedding_model,
+                            input=question
+                        )
+                        hyde_embeddings.append(emb_response.data[0].embedding)
+                    except Exception as e:
+                        logger.warning(f"  ✗ HyDE 질의 {i} 임베딩 실패: {e}")
+                
+                logger.info(f"  → {len(hyde_embeddings)}개 HyDE 임베딩 생성 완료")
+                
+                # Update product with summary and embedding
+                session.run("""
+                    MATCH (prod:InsuranceProduct {code: $code})
+                    SET prod.summary = $summary,
+                        prod.embedding = $embedding
+                    """,
+                    code=product_code,
+                    summary=product_summary,
+                    embedding=product_embedding
+                )
+                
+                # Create HypotheticalQuestion nodes for each HyDE question
+                logger.info(f"  → HyDE 질의 노드 생성 중...")
+                for i, (question, embedding) in enumerate(zip(hyde_questions, hyde_embeddings), 1):
+                    session.run("""
+                        MATCH (prod:InsuranceProduct {code: $product_code})
+                        CREATE (hq:HypotheticalQuestion {
+                            questionId: $question_id,
+                            question: $question,
+                            embedding: $embedding
+                        })
+                        CREATE (prod)-[:HAS_HYPOTHETICAL_QUESTION]->(hq)
+                        """,
+                        product_code=product_code,
+                        question_id=f"{product_code}_HQ_{i}",
+                        question=question,
+                        embedding=embedding
+                    )
+                
+                stats['product_summary'] = True
+                stats['hyde_questions'] = len(hyde_questions)
+                logger.info(f"  ✅ 상품 요약, 임베딩 및 HyDE {len(hyde_questions)}개 완료")
+                
+            except Exception as e:
+                logger.warning(f"  ✗ 상품 요약 생성 실패: {e}")
+        
         # Verify
         result = session.run("""
             MATCH (ver:PolicyVersion {versionId: $version_id})
@@ -379,6 +490,8 @@ def ingest_pdf_fast(pdf_path: str,
     logger.info(f"총 조항: {stats['total_clauses']}개")
     logger.info(f"처리된 조항: {stats['processed_clauses']}개")
     logger.info(f"조항 요약: {stats['clause_summaries']}개")
+    logger.info(f"상품 전체 요약: {'생성됨' if stats['product_summary'] else '미생성'}")
+    logger.info(f"HyDE 질의: {stats['hyde_questions']}개")
     logger.info(f"청크: {stats['chunks']}개")
     logger.info(f"청크 임베딩: {stats['embeddings']}개")
     logger.info(f"노드 생성: {stats['nodes_created']}개")

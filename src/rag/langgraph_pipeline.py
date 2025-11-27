@@ -15,6 +15,7 @@ from src.retrieval.hybrid_retriever import HybridRetriever
 class GraphRAGState(TypedDict):
     """State for the GraphRAG pipeline"""
     question: str
+    query_scope: str  # "product_overview" or "clause_detail"
     intent: str  # coverage, exclusion, condition, etc.
     keywords: List[str]
     risk_types: List[str]
@@ -30,6 +31,32 @@ class PolicyGraphRAGPipeline:
     """
     LangGraph-based pipeline for policy QA using GraphRAG
     """
+    
+    QUERY_ROUTER_PROMPT = """You are an expert at understanding insurance-related questions.
+
+Determine whether the user is asking about:
+1. **product_overview**: General questions about the insurance product itself
+   - What is this insurance product?
+   - What are the main features?
+   - What does this insurance cover in general?
+   - How much is the premium?
+   - What is the general coverage?
+   
+2. **clause_detail**: Specific questions requiring detailed clause interpretation
+   - Specific coverage details for certain situations
+   - Exclusion conditions
+   - Claim procedures
+   - Specific requirements or conditions
+   - Detailed interpretation of specific clauses
+
+Question: {question}
+
+Return ONLY a JSON object:
+{{
+  "query_scope": "product_overview" or "clause_detail",
+  "reasoning": "brief explanation of why"
+}}
+"""
     
     QUERY_UNDERSTANDING_PROMPT = """You are an expert at analyzing insurance policy questions.
 
@@ -118,25 +145,88 @@ Provide your answer in the following JSON format:
         logger.info("✅ PolicyGraphRAGPipeline initialized")
     
     def _build_graph(self) -> StateGraph:
-        """Build the LangGraph workflow"""
+        """Build the LangGraph workflow with routing"""
         workflow = StateGraph(GraphRAGState)
         
         # Add nodes
+        workflow.add_node("query_router", self._query_router_node)
         workflow.add_node("query_understanding", self._query_understanding_node)
-        workflow.add_node("retrieval", self._retrieval_node)
+        workflow.add_node("product_retrieval", self._product_retrieval_node)
+        workflow.add_node("clause_retrieval", self._clause_retrieval_node)
         workflow.add_node("answer_synthesis", self._answer_synthesis_node)
         
         # Add edges
-        workflow.set_entry_point("query_understanding")
-        workflow.add_edge("query_understanding", "retrieval")
-        workflow.add_edge("retrieval", "answer_synthesis")
+        workflow.set_entry_point("query_router")
+        
+        # Conditional routing based on query_scope
+        workflow.add_conditional_edges(
+            "query_router",
+            self._route_query,
+            {
+                "product_overview": "product_retrieval",
+                "clause_detail": "query_understanding"
+            }
+        )
+        
+        # Product overview path
+        workflow.add_edge("product_retrieval", "answer_synthesis")
+        
+        # Clause detail path
+        workflow.add_edge("query_understanding", "clause_retrieval")
+        workflow.add_edge("clause_retrieval", "answer_synthesis")
+        
+        # End
         workflow.add_edge("answer_synthesis", END)
         
         return workflow.compile()
     
+    def _query_router_node(self, state: GraphRAGState) -> GraphRAGState:
+        """
+        Node 0: Route query to product overview or clause detail path
+        """
+        logger.info("🚦 Query Router Node")
+        
+        question = state["question"]
+        
+        prompt = ChatPromptTemplate.from_template(self.QUERY_ROUTER_PROMPT)
+        
+        try:
+            response = self.llm.invoke(
+                prompt.format(question=question),
+            )
+            
+            # Parse JSON response
+            content = response.content
+            
+            # Extract JSON from response
+            if "```json" in content:
+                json_str = content.split("```json")[1].split("```")[0].strip()
+            elif "```" in content:
+                json_str = content.split("```")[1].split("```")[0].strip()
+            else:
+                json_str = content.strip()
+            
+            parsed = json.loads(json_str)
+            
+            state["query_scope"] = parsed.get("query_scope", "clause_detail")
+            logger.info(f"Routed to: {state['query_scope']} - {parsed.get('reasoning', '')}")
+            
+        except Exception as e:
+            logger.error(f"Error in query routing: {e}")
+            # Default to clause detail
+            state["query_scope"] = "clause_detail"
+        
+        return state
+    
+    def _route_query(self, state: GraphRAGState) -> str:
+        """
+        Routing function to determine next node
+        """
+        return state.get("query_scope", "clause_detail")
+    
     def _query_understanding_node(self, state: GraphRAGState) -> GraphRAGState:
         """
-        Node 1: Understand the query and extract structured information
+        Node 1: Understand the query and extract structured information (for clause detail)
         """
         logger.info("🔍 Query Understanding Node")
         
@@ -181,11 +271,34 @@ Provide your answer in the following JSON format:
         
         return state
     
-    def _retrieval_node(self, state: GraphRAGState) -> GraphRAGState:
+    def _product_retrieval_node(self, state: GraphRAGState) -> GraphRAGState:
         """
-        Node 2: Retrieve relevant chunks using hybrid retrieval
+        Node 2a: Retrieve product-level information using HyDE
         """
-        logger.info("📚 Retrieval Node")
+        logger.info("📦 Product Retrieval Node (HyDE)")
+        
+        question = state["question"]
+        
+        try:
+            # Search in InsuranceProduct and HypotheticalQuestion nodes
+            results = self.retriever.retrieve_product_overview(question)
+            
+            state["retrieved_chunks"] = results
+            state["intent"] = "general"
+            logger.info(f"Retrieved product overview with {len(results)} items")
+            
+        except Exception as e:
+            logger.error(f"Error in product retrieval: {e}")
+            state["retrieved_chunks"] = []
+            state["intent"] = "general"
+        
+        return state
+    
+    def _clause_retrieval_node(self, state: GraphRAGState) -> GraphRAGState:
+        """
+        Node 2b: Retrieve relevant chunks using hybrid retrieval (for clause detail)
+        """
+        logger.info("📚 Clause Retrieval Node")
         
         question = state["question"]
         intent = state.get("intent", "general")
@@ -220,12 +333,13 @@ Provide your answer in the following JSON format:
     
     def _answer_synthesis_node(self, state: GraphRAGState) -> GraphRAGState:
         """
-        Node 3: Synthesize answer from retrieved chunks
+        Node 3: Synthesize answer from retrieved chunks or product info
         """
         logger.info("✍️  Answer Synthesis Node")
         
         question = state["question"]
         chunks = state.get("retrieved_chunks", [])
+        query_scope = state.get("query_scope", "clause_detail")
         
         if not chunks:
             state["answer"] = "죄송합니다. 관련된 약관 정보를 찾을 수 없습니다."
@@ -233,6 +347,37 @@ Provide your answer in the following JSON format:
             state["confidence"] = 0.0
             return state
         
+        # Check if product overview result
+        if chunks and chunks[0].get('type') == 'product_overview':
+            logger.info("Synthesizing answer from product overview")
+            
+            product_data = chunks[0].get('product', {})
+            matched_questions = chunks[0].get('matched_questions', [])
+            
+            # Generate answer based on product summary
+            answer_parts = []
+            answer_parts.append(f"**{product_data.get('name', '보험상품')}**")
+            answer_parts.append("")
+            answer_parts.append(product_data.get('summary', '상품 정보를 찾을 수 없습니다.'))
+            
+            if matched_questions:
+                answer_parts.append("")
+                answer_parts.append("💡 관련 질문:")
+                for i, mq in enumerate(matched_questions[:3], 1):
+                    answer_parts.append(f"  {i}. {mq['question']}")
+            
+            state["answer"] = "\n".join(answer_parts)
+            state["citations"] = [{
+                "clause_id": "상품정보",
+                "title": product_data.get('name', ''),
+                "text": product_data.get('summary', '')[:100]
+            }]
+            state["confidence"] = chunks[0].get('hybrid_score', 0.9)
+            
+            logger.info(f"Product overview answer generated with confidence: {state['confidence']}")
+            return state
+        
+        # Clause detail answer (기존 로직)
         # Format context
         context_parts = []
         for i, chunk in enumerate(chunks):
@@ -302,6 +447,7 @@ Provide your answer in the following JSON format:
         # Initialize state
         initial_state = {
             "question": question,
+            "query_scope": "",
             "intent": "",
             "keywords": [],
             "risk_types": [],
