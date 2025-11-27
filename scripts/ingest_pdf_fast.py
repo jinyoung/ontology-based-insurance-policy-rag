@@ -49,6 +49,7 @@ def ingest_pdf_fast(pdf_path: str,
         'pages': 0,
         'total_clauses': 0,
         'processed_clauses': 0,
+        'clause_summaries': 0,
         'chunks': 0,
         'embeddings': 0,
         'nodes_created': 0
@@ -116,11 +117,55 @@ def ingest_pdf_fast(pdf_path: str,
     stats['chunks'] = len(all_chunks)
     logger.info(f"\n  ✅ 총 {stats['chunks']}개 시맨틱 청크 생성")
     
-    # Step 4: Generate embeddings
+    # Step 3.5: Summarize and embed clauses
+    clause_summaries = []
+    
+    logger.info("\n[Step 3.5] 조항 요약 및 임베딩 생성 중...")
+    openai_client = OpenAI(api_key=settings.openai_api_key)
+    
+    for i, clause in enumerate(clauses, 1):
+        try:
+            logger.info(f"  [{i}/{len(clauses)}] {clause.clause_id} 요약 중... ({len(clause.full_text)}자)")
+            
+            # Summarize clause using LLM
+            summary_response = openai_client.chat.completions.create(
+                model=settings.llm_model,
+                messages=[
+                    {"role": "system", "content": "당신은 보험약관 요약 전문가입니다. 주어진 조항의 핵심 내용을 2-3문장으로 간결하게 요약하세요."},
+                    {"role": "user", "content": f"다음 조항을 요약하세요:\n\n제목: {clause.title}\n\n내용:\n{clause.full_text}"}
+                ],
+                temperature=0.3,
+                max_tokens=300
+            )
+            
+            summary = summary_response.choices[0].message.content.strip()
+            logger.info(f"       → 요약 완료: {summary[:50]}...")
+            
+            # Generate embedding for summary
+            embedding_response = openai_client.embeddings.create(
+                model=settings.embedding_model,
+                input=summary
+            )
+            embedding = embedding_response.data[0].embedding
+            
+            clause_summaries.append({
+                'clause_id': clause.clause_id,
+                'title': clause.title,
+                'summary': summary,
+                'embedding': embedding
+            })
+            
+        except Exception as e:
+            logger.warning(f"       ✗ 요약/임베딩 실패: {e}")
+            continue
+    
+    stats['clause_summaries'] = len(clause_summaries)
+    logger.info(f"\n  ✅ {len(clause_summaries)}개 조항 요약 및 임베딩 완료")
+    
+    # Step 4: Generate embeddings for chunks
     chunks_with_embeddings = []
     
-    logger.info("\n[Step 4] 임베딩 생성 중...")
-    openai_client = OpenAI(api_key=settings.openai_api_key)
+    logger.info("\n[Step 4] 청크 임베딩 생성 중...")
     
     for i, chunk in enumerate(all_chunks, 1):
         try:
@@ -181,27 +226,59 @@ def ingest_pdf_fast(pdf_path: str,
             pdf_path=str(pdf_file)
         )
         
-        # Create clauses
+        # Create clauses with summaries and embeddings
         logger.info(f"  조항 로딩: {len(clauses)}개")
+        
+        # Create lookup dictionary for summaries
+        summary_dict = {s['clause_id']: s for s in clause_summaries}
+        
         for clause in clauses:
-            session.run("""
-                MATCH (ver:PolicyVersion {versionId: $version_id})
-                MERGE (c:PolicyClause {clauseId: $clause_id})
-                SET c.title = $title,
-                    c.clauseType = $clause_type,
-                    c.text = $text,
-                    c.sectionPath = $section_path,
-                    c.articleNumber = $article_number
-                MERGE (ver)-[:HAS_CLAUSE]->(c)
-                """,
-                version_id=version_id,
-                clause_id=clause.clause_id,
-                title=clause.title,
-                clause_type=clause.clause_type or 'General',
-                text=clause.full_text,
-                section_path=clause.section_path,
-                article_number=clause.article_number
-            )
+            clause_summary_data = summary_dict.get(clause.clause_id)
+            
+            if clause_summary_data:
+                # Clause with summary and embedding
+                session.run("""
+                    MATCH (ver:PolicyVersion {versionId: $version_id})
+                    MERGE (c:PolicyClause {clauseId: $clause_id})
+                    SET c.title = $title,
+                        c.clauseType = $clause_type,
+                        c.text = $text,
+                        c.summary = $summary,
+                        c.embedding = $embedding,
+                        c.sectionPath = $section_path,
+                        c.articleNumber = $article_number
+                    MERGE (ver)-[:HAS_CLAUSE]->(c)
+                    """,
+                    version_id=version_id,
+                    clause_id=clause.clause_id,
+                    title=clause.title,
+                    clause_type=clause.clause_type or 'General',
+                    text=clause.full_text,
+                    summary=clause_summary_data['summary'],
+                    embedding=clause_summary_data['embedding'],
+                    section_path=clause.section_path,
+                    article_number=clause.article_number
+                )
+            else:
+                # Clause without summary (fallback)
+                session.run("""
+                    MATCH (ver:PolicyVersion {versionId: $version_id})
+                    MERGE (c:PolicyClause {clauseId: $clause_id})
+                    SET c.title = $title,
+                        c.clauseType = $clause_type,
+                        c.text = $text,
+                        c.sectionPath = $section_path,
+                        c.articleNumber = $article_number
+                    MERGE (ver)-[:HAS_CLAUSE]->(c)
+                    """,
+                    version_id=version_id,
+                    clause_id=clause.clause_id,
+                    title=clause.title,
+                    clause_type=clause.clause_type or 'General',
+                    text=clause.full_text,
+                    section_path=clause.section_path,
+                    article_number=clause.article_number
+                )
             
             # Create special clause link
             if clause.parent_section:
@@ -301,8 +378,9 @@ def ingest_pdf_fast(pdf_path: str,
     logger.info(f"페이지: {stats['pages']}개")
     logger.info(f"총 조항: {stats['total_clauses']}개")
     logger.info(f"처리된 조항: {stats['processed_clauses']}개")
+    logger.info(f"조항 요약: {stats['clause_summaries']}개")
     logger.info(f"청크: {stats['chunks']}개")
-    logger.info(f"임베딩: {stats['embeddings']}개")
+    logger.info(f"청크 임베딩: {stats['embeddings']}개")
     logger.info(f"노드 생성: {stats['nodes_created']}개")
     logger.info("="*80)
     
