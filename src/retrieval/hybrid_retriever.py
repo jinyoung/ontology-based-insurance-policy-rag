@@ -29,7 +29,7 @@ class HybridRetriever:
         logger.info(f"HybridRetriever initialized with alpha={alpha}")
     
     def retrieve(self, 
-                 query: str,
+                     query: str,
                  top_k: int = 10,
                  intent: Optional[str] = None,
                  filter_clause_type: Optional[str] = None) -> List[Dict[str, Any]]:
@@ -63,17 +63,17 @@ class HybridRetriever:
     def _generate_embedding(self, text: str) -> List[float]:
         """Generate embedding for query text"""
         try:
-            response = self.openai_client.embeddings.create(
-                model=settings.embedding_model,
-                input=text
-            )
-            return response.data[0].embedding
+        response = self.openai_client.embeddings.create(
+            model=settings.embedding_model,
+            input=text
+        )
+        return response.data[0].embedding
         except Exception as e:
             logger.error(f"Error generating embedding: {e}")
             raise
     
-    def _vector_search(self, 
-                       query_embedding: List[float],
+    def _vector_search(self,
+                      query_embedding: List[float],
                        top_k: int,
                        filter_clause_type: Optional[str] = None) -> List[Dict[str, Any]]:
         """
@@ -92,26 +92,26 @@ class HybridRetriever:
                 # Try to use vector index if available
                 if filter_clause_type:
                     cypher_query = """
-                        CALL db.index.vector.queryNodes('paragraph_embedding_index', $top_k, $query_embedding)
-                        YIELD node, score
-                        MATCH (node)<-[:HAS_PARAGRAPH]-(c:PolicyClause)
+            CALL db.index.vector.queryNodes('paragraph_embedding_index', $top_k, $query_embedding)
+            YIELD node, score
+            MATCH (node)<-[:HAS_PARAGRAPH]-(c:PolicyClause)
                         WHERE c.clauseType = $clause_type
                         RETURN node, score, c
-                        ORDER BY score DESC
-                    """
-                    result = session.run(
+            ORDER BY score DESC
+            """
+                result = session.run(
                         cypher_query,
                         top_k=top_k,
-                        query_embedding=query_embedding,
+                    query_embedding=query_embedding,
                         clause_type=filter_clause_type
-                    )
-                else:
+                )
+        else:
                     cypher_query = """
-                        CALL db.index.vector.queryNodes('paragraph_embedding_index', $top_k, $query_embedding)
-                        YIELD node, score
-                        MATCH (node)<-[:HAS_PARAGRAPH]-(c:PolicyClause)
+            CALL db.index.vector.queryNodes('paragraph_embedding_index', $top_k, $query_embedding)
+            YIELD node, score
+            MATCH (node)<-[:HAS_PARAGRAPH]-(c:PolicyClause)
                         RETURN node, score, c
-                        ORDER BY score DESC
+            ORDER BY score DESC
                     """
                     result = session.run(
                         cypher_query,
@@ -179,7 +179,7 @@ class HybridRetriever:
                 WHERE {clause_type_filter}
                   AND ({keyword_conditions})
                 RETURN p, c
-                LIMIT $top_k
+            LIMIT $top_k
             """
             
             result = session.run(cypher_query, top_k=top_k)

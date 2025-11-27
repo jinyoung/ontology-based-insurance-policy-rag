@@ -34,6 +34,21 @@ class PolicyGraphSchema:
         FOR (c:PolicyClause)
         REQUIRE c.clauseId IS UNIQUE
         """,
+        """
+        CREATE CONSTRAINT article_id_unique IF NOT EXISTS
+        FOR (a:Article)
+        REQUIRE a.articleId IS UNIQUE
+        """,
+        """
+        CREATE CONSTRAINT paragraph_id_unique IF NOT EXISTS
+        FOR (p:Paragraph)
+        REQUIRE p.paragraphId IS UNIQUE
+        """,
+        """
+        CREATE CONSTRAINT item_id_unique IF NOT EXISTS
+        FOR (i:Item)
+        REQUIRE i.itemId IS UNIQUE
+        """,
     ]
     
     INDEXES = [

@@ -27,21 +27,23 @@ class Clause:
 
 
 @dataclass
-class Article:
-    """Represents an article within a clause (항)"""
-    article_id: str  # e.g., "제1항"
+class Paragraph:
+    """Represents a paragraph within a clause (항)"""
+    paragraph_id: str  # e.g., "제1조제1항"
     number: int
     text: str
     parent_clause: str
+    embedding: Optional[List[float]] = None
 
 
 @dataclass
 class Item:
-    """Represents an item within an article (호)"""
-    item_id: str  # e.g., "제1호"
+    """Represents an item within a paragraph (호)"""
+    item_id: str  # e.g., "제1조제1항제1호"
     number: int
     text: str
-    parent_article: str
+    parent_paragraph: str
+    embedding: Optional[List[float]] = None
 
 
 class ClauseExtractor:
@@ -271,6 +273,174 @@ class ClauseExtractor:
             List of clauses in that section
         """
         return [c for c in self.clauses if c.parent_section == section_name]
+    
+    def extract_paragraphs_and_items(self, clause: Clause) -> Tuple[List[Paragraph], List[Item]]:
+        """
+        Extract paragraphs (항) and items (호) from a clause with hierarchical structure
+        
+        Args:
+            clause: Clause object
+            
+        Returns:
+            Tuple of (paragraphs, items)
+        """
+        paragraphs = []
+        items = []
+        
+        lines = clause.full_text.split('\n')
+        
+        # Circled number mapping (①, ②, ③...)
+        circled_map = {
+            '①': 1, '②': 2, '③': 3, '④': 4, '⑤': 5,
+            '⑥': 6, '⑦': 7, '⑧': 8, '⑨': 9, '⑩': 10,
+            '⑪': 11, '⑫': 12, '⑬': 13, '⑭': 14, '⑮': 15
+        }
+        
+        current_paragraph = None
+        current_paragraph_text = []
+        current_item = None
+        current_item_text = []
+        
+        for line in lines:
+            stripped = line.strip()
+            if not stripped:
+                continue
+            
+            # Check for paragraph marker (①, ②, etc.)
+            circled_found = None
+            for symbol, num in circled_map.items():
+                if symbol in stripped:
+                    circled_found = (symbol, num)
+                    break
+            
+            if circled_found:
+                # Save previous item (if any) before starting new paragraph
+                if current_item:
+                    current_item.text = '\n'.join(current_item_text).strip()
+                    items.append(current_item)
+                    logger.debug(f"Saved item before new paragraph: {current_item.item_id}")
+                
+                # Save previous paragraph
+                if current_paragraph:
+                    current_paragraph.text = '\n'.join(current_paragraph_text).strip()
+                    paragraphs.append(current_paragraph)
+                
+                # Start new paragraph
+                para_num = circled_found[1]
+                para_id = f"{clause.clause_id}제{para_num}항"
+                current_paragraph = Paragraph(
+                    paragraph_id=para_id,
+                    number=para_num,
+                    text="",
+                    parent_clause=clause.clause_id
+                )
+                current_paragraph_text = [stripped]
+                current_item = None
+                current_item_text = []
+                
+                logger.debug(f"Found paragraph: {para_id}")
+                continue
+            
+            # Check for item pattern (1. 2. 3. ...)
+            item_match = re.match(r'^\s*(\d+)\s*\.', stripped)
+            if item_match and current_paragraph:
+                # Save previous item
+                if current_item:
+                    current_item.text = '\n'.join(current_item_text).strip()
+                    items.append(current_item)
+                
+                # Start new item
+                item_num = int(item_match.group(1))
+                item_id = f"{current_paragraph.paragraph_id}제{item_num}호"
+                current_item = Item(
+                    item_id=item_id,
+                    number=item_num,
+                    text="",
+                    parent_paragraph=current_paragraph.paragraph_id
+                )
+                current_item_text = [stripped]
+                
+                logger.debug(f"Found item: {item_id}")
+                continue
+            
+            # Accumulate text
+            if current_item:
+                current_item_text.append(stripped)
+            elif current_paragraph:
+                current_paragraph_text.append(stripped)
+        
+        # Save last paragraph/item
+        if current_item:
+            current_item.text = '\n'.join(current_item_text).strip()
+            items.append(current_item)
+        if current_paragraph:
+            current_paragraph.text = '\n'.join(current_paragraph_text).strip()
+            paragraphs.append(current_paragraph)
+        
+        # If no paragraphs found, create a single paragraph with clause text
+        if not paragraphs:
+            para_id = f"{clause.clause_id}제1항"
+            paragraphs.append(Paragraph(
+                paragraph_id=para_id,
+                number=1,
+                text=clause.full_text,
+                parent_clause=clause.clause_id
+            ))
+        
+        logger.info(f"Extracted {len(paragraphs)} paragraphs and {len(items)} items from {clause.clause_id}")
+        return paragraphs, items
+    
+    def find_cross_references(self, text: str) -> List[Dict[str, str]]:
+        """
+        Find cross-references to other clauses in text
+        
+        Patterns:
+        - 제11조
+        - 제3조 제2항
+        - 제1조제1항제1호
+        
+        Args:
+            text: Text to search for references
+            
+        Returns:
+            List of reference dictionaries with 'from', 'to', 'type'
+        """
+        references = []
+        
+        # Pattern 1: 제X조
+        clause_refs = re.findall(r'제\s*(\d+)\s*조(?![가-힣])', text)
+        for ref in clause_refs:
+            references.append({
+                'to': f'제{ref}조',
+                'type': 'clause'
+            })
+        
+        # Pattern 2: 제X조 제Y항
+        para_refs = re.findall(r'제\s*(\d+)\s*조\s*제\s*(\d+)\s*항', text)
+        for clause_num, para_num in para_refs:
+            references.append({
+                'to': f'제{clause_num}조제{para_num}항',
+                'type': 'paragraph'
+            })
+        
+        # Pattern 3: 제X조제Y항제Z호
+        item_refs = re.findall(r'제\s*(\d+)\s*조제\s*(\d+)\s*항제\s*(\d+)\s*호', text)
+        for clause_num, para_num, item_num in item_refs:
+            references.append({
+                'to': f'제{clause_num}조제{para_num}항제{item_num}호',
+                'type': 'item'
+            })
+        
+        # Remove duplicates
+        seen = set()
+        unique_refs = []
+        for ref in references:
+            key = (ref['to'], ref['type'])
+            if key not in seen:
+                seen.add(key)
+                unique_refs.append(ref)
+        
+        return unique_refs
     
     def to_dict(self) -> List[Dict[str, Any]]:
         """
