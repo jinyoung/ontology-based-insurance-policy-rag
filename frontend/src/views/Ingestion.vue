@@ -113,17 +113,17 @@
 
           <button
             v-if="currentStep === 2"
-            @click="startIngestion"
+            @click="checkExistingNodes"
             :disabled="!canStartIngestion || ingesting"
             class="btn btn-primary btn-full mt-4"
           >
-            <span v-if="ingesting" class="spinner mr-2"></span>
-            {{ ingesting ? '시작 중...' : 'Ingestion 시작' }}
+            <span v-if="checkingNodes" class="spinner mr-2"></span>
+            {{ checkingNodes ? '확인 중...' : 'Ingestion 시작' }}
           </button>
         </div>
 
         <!-- Step 3: Processing -->
-        <div class="step-card full-width" v-if="jobId">
+        <div class="step-card full-width" v-if="jobId || currentStep === 3">
           <div class="step-header">
             <div class="step-number">3</div>
             <h3>처리 진행상황</h3>
@@ -139,6 +139,37 @@
             <div class="progress-info">
               <span class="progress-stage">{{ jobProgress?.stage || '준비 중...' }}</span>
               <span class="progress-percent">{{ jobProgress?.percent || 0 }}%</span>
+            </div>
+            <div v-if="jobProgress?.detail" class="progress-detail">
+              {{ jobProgress.detail }}
+            </div>
+          </div>
+
+          <!-- Processing Steps Timeline -->
+          <div class="timeline" v-if="jobId">
+            <div class="timeline-item" :class="{ active: isStepActive('pdf'), completed: isStepCompleted('pdf') }">
+              <div class="timeline-marker">📄</div>
+              <div class="timeline-content">PDF 파싱</div>
+            </div>
+            <div class="timeline-item" :class="{ active: isStepActive('extract'), completed: isStepCompleted('extract') }">
+              <div class="timeline-marker">📋</div>
+              <div class="timeline-content">조/항/호 추출</div>
+            </div>
+            <div class="timeline-item" :class="{ active: isStepActive('embedding'), completed: isStepCompleted('embedding') }">
+              <div class="timeline-marker">🧠</div>
+              <div class="timeline-content">임베딩 생성</div>
+            </div>
+            <div class="timeline-item" :class="{ active: isStepActive('neo4j'), completed: isStepCompleted('neo4j') }">
+              <div class="timeline-marker">🗃️</div>
+              <div class="timeline-content">Neo4j 저장</div>
+            </div>
+            <div class="timeline-item" :class="{ active: isStepActive('refers'), completed: isStepCompleted('refers') }">
+              <div class="timeline-marker">🔗</div>
+              <div class="timeline-content">REFERS_TO 연결</div>
+            </div>
+            <div class="timeline-item" :class="{ active: isStepActive('complete'), completed: isStepCompleted('complete') }">
+              <div class="timeline-marker">✅</div>
+              <div class="timeline-content">완료</div>
             </div>
           </div>
 
@@ -156,6 +187,37 @@
               질의하기로 이동 →
             </router-link>
           </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Existing Nodes Dialog -->
+    <div v-if="showExistingNodesDialog" class="dialog-overlay" @click.self="showExistingNodesDialog = false">
+      <div class="dialog">
+        <div class="dialog-header">
+          <h3>⚠️ 기존 데이터 발견</h3>
+        </div>
+        <div class="dialog-body">
+          <p>그래프에 기존 데이터가 있습니다:</p>
+          <div class="existing-nodes-list">
+            <div v-for="(count, label) in existingNodes.nodes_by_type" :key="label" class="existing-node-item">
+              <span class="node-label">{{ label }}</span>
+              <span class="node-count">{{ count }}개</span>
+            </div>
+            <div class="existing-node-total">
+              <span>총 노드 수</span>
+              <span class="node-count total">{{ existingNodes.total_nodes }}개</span>
+            </div>
+          </div>
+          <p class="dialog-warning">기존 데이터를 삭제하고 새로 적재하시겠습니까?</p>
+        </div>
+        <div class="dialog-actions">
+          <button @click="showExistingNodesDialog = false" class="btn btn-secondary">취소</button>
+          <button @click="clearAndStartIngestion" :disabled="clearingNodes" class="btn btn-danger">
+            <span v-if="clearingNodes" class="spinner mr-2"></span>
+            {{ clearingNodes ? '삭제 중...' : '삭제 후 시작' }}
+          </button>
+          <button @click="startIngestionDirectly" class="btn btn-primary">기존 데이터 유지</button>
         </div>
       </div>
     </div>
@@ -185,10 +247,15 @@ export default {
     })
     
     const ingesting = ref(false)
+    const checkingNodes = ref(false)
+    const clearingNodes = ref(false)
     const jobId = ref(null)
     const jobStatus = ref(null)
     const jobProgress = ref(null)
     const jobError = ref(null)
+    
+    const showExistingNodesDialog = ref(false)
+    const existingNodes = ref({ total_nodes: 0, nodes_by_type: {} })
     
     let statusCheckInterval = null
 
@@ -256,14 +323,47 @@ export default {
       }
     }
 
-    const startIngestion = async () => {
+    const checkExistingNodes = async () => {
+      checkingNodes.value = true
+      try {
+        const result = await api.checkExistingNodes()
+        if (result.has_existing) {
+          existingNodes.value = result
+          showExistingNodesDialog.value = true
+        } else {
+          startIngestionDirectly()
+        }
+      } catch (error) {
+        console.error('Error checking existing nodes:', error)
+        startIngestionDirectly()
+      } finally {
+        checkingNodes.value = false
+      }
+    }
+
+    const clearAndStartIngestion = async () => {
+      clearingNodes.value = true
+      try {
+        await api.clearGraph()
+        showExistingNodesDialog.value = false
+        startIngestionDirectly()
+      } catch (error) {
+        alert('데이터 삭제 실패: ' + error.message)
+      } finally {
+        clearingNodes.value = false
+      }
+    }
+
+    const startIngestionDirectly = async () => {
+      showExistingNodesDialog.value = false
       if (!canStartIngestion.value) return
       ingesting.value = true
       try {
         const result = await api.startIngestion(uploadedFileId.value, ingestionConfig.value)
         jobId.value = result.job_id
         jobStatus.value = result.status
-        statusCheckInterval = setInterval(checkStatus, 2000)
+        jobProgress.value = result.progress
+        statusCheckInterval = setInterval(checkStatus, 1000)
       } catch (error) {
         alert('Ingestion 시작 실패: ' + error.message)
         ingesting.value = false
@@ -307,11 +407,39 @@ export default {
       return map[status] || 'info'
     }
 
+    const isStepActive = (step) => {
+      const stage = jobProgress.value?.stage || ''
+      const stepMap = {
+        'pdf': ['PDF 파싱'],
+        'extract': ['조항 추출', '항/호 추출', '상호 참조 분석'],
+        'embedding': ['임베딩 생성', '조(條) 임베딩', '항(項) 임베딩', '호(號) 임베딩'],
+        'neo4j': ['Neo4j 로딩', '조(條) 노드 생성', '항(項) 노드 생성', '호(號) 노드 생성'],
+        'refers': ['상호 참조 관계', 'REFERS_TO'],
+        'complete': ['완료', '추천 질의']
+      }
+      return stepMap[step]?.some(s => stage.includes(s)) || false
+    }
+
+    const isStepCompleted = (step) => {
+      const percent = jobProgress.value?.percent || 0
+      const stepPercents = {
+        'pdf': 10,
+        'extract': 30,
+        'embedding': 60,
+        'neo4j': 80,
+        'refers': 90,
+        'complete': 100
+      }
+      return percent >= stepPercents[step]
+    }
+
     return {
       fileInput, selectedFile, uploading, uploadedFileId, ingestionConfig, ingesting,
       jobId, jobStatus, jobProgress, jobError, currentStep, canStartIngestion,
+      checkingNodes, clearingNodes, showExistingNodesDialog, existingNodes,
       triggerFileInput, handleFileSelect, handleDrop, clearFile, formatFileSize,
-      uploadFile, startIngestion, getStatusText, getStatusType
+      uploadFile, checkExistingNodes, clearAndStartIngestion, startIngestionDirectly,
+      getStatusText, getStatusType, isStepActive, isStepCompleted
     }
   }
 }
@@ -555,9 +683,179 @@ export default {
   font-weight: 700;
 }
 
+.progress-detail {
+  font-size: 0.8125rem;
+  color: var(--text-light);
+  margin-top: 0.5rem;
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  background: var(--bg-light);
+  padding: 0.5rem 0.75rem;
+  border-radius: 0.5rem;
+}
+
+/* Timeline */
+.timeline {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 2rem;
+  padding-top: 1.5rem;
+  border-top: 1px solid var(--border-color);
+}
+
+.timeline-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.5rem;
+  opacity: 0.4;
+  transition: all 0.3s ease;
+}
+
+.timeline-item.active {
+  opacity: 1;
+}
+
+.timeline-item.active .timeline-marker {
+  transform: scale(1.2);
+  animation: pulse 1s infinite;
+}
+
+.timeline-item.completed {
+  opacity: 1;
+}
+
+.timeline-marker {
+  font-size: 1.5rem;
+  transition: transform 0.3s ease;
+}
+
+.timeline-content {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--text-light);
+  text-align: center;
+}
+
+@keyframes pulse {
+  0%, 100% { transform: scale(1.2); }
+  50% { transform: scale(1.3); }
+}
+
 .success-action {
   margin-top: 2rem;
   text-align: center;
+}
+
+/* Dialog */
+.dialog-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.dialog {
+  background: white;
+  border-radius: 1rem;
+  max-width: 500px;
+  width: 90%;
+  box-shadow: var(--shadow-lg);
+  animation: dialogIn 0.2s ease;
+}
+
+@keyframes dialogIn {
+  from {
+    opacity: 0;
+    transform: scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.dialog-header {
+  padding: 1.5rem 2rem;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.dialog-header h3 {
+  margin: 0;
+  font-size: 1.25rem;
+  font-weight: 700;
+}
+
+.dialog-body {
+  padding: 1.5rem 2rem;
+}
+
+.dialog-body p {
+  margin-bottom: 1rem;
+  color: var(--text-color);
+}
+
+.existing-nodes-list {
+  background: var(--bg-light);
+  border-radius: 0.75rem;
+  padding: 1rem;
+  margin-bottom: 1rem;
+}
+
+.existing-node-item {
+  display: flex;
+  justify-content: space-between;
+  padding: 0.5rem 0;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.existing-node-item:last-child {
+  border-bottom: none;
+}
+
+.existing-node-total {
+  display: flex;
+  justify-content: space-between;
+  padding-top: 0.75rem;
+  margin-top: 0.75rem;
+  border-top: 2px solid var(--border-color);
+  font-weight: 700;
+}
+
+.node-label {
+  color: var(--text-color);
+}
+
+.node-count {
+  color: var(--primary-color);
+  font-weight: 600;
+}
+
+.node-count.total {
+  font-size: 1.125rem;
+}
+
+.dialog-warning {
+  color: var(--warning-color);
+  font-weight: 600;
+}
+
+.dialog-actions {
+  display: flex;
+  gap: 0.75rem;
+  padding: 1.5rem 2rem;
+  border-top: 1px solid var(--border-color);
+  justify-content: flex-end;
+}
+
+.btn-danger {
+  background: linear-gradient(135deg, #DC2626 0%, #B91C1C 100%);
+  color: white;
 }
 
 .mr-2 { margin-right: 0.5rem; }
@@ -567,6 +865,15 @@ export default {
 @media (max-width: 768px) {
   .steps-grid {
     grid-template-columns: 1fr;
+  }
+  
+  .timeline {
+    flex-wrap: wrap;
+    gap: 1rem;
+  }
+  
+  .timeline-item {
+    flex: 1 1 30%;
   }
 }
 </style>

@@ -10,6 +10,7 @@
 """
 import sys
 from pathlib import Path
+import json
 
 # Add parent directory to path
 sys.path.append(str(Path(__file__).parent.parent))
@@ -24,6 +25,20 @@ from src.parsers.pdf_parser import PolicyPDFParser
 from src.parsers.clause_extractor import ClauseExtractor
 
 
+def update_progress(progress_file: str, stage: str, percent: int, detail: str = ""):
+    """Update progress file for frontend"""
+    if progress_file:
+        try:
+            with open(progress_file, 'w') as f:
+                json.dump({
+                    "stage": stage,
+                    "percent": percent,
+                    "detail": detail
+                }, f)
+        except:
+            pass
+
+
 def main():
     parser = argparse.ArgumentParser(description="Ingest PDF with hierarchical structure (조-항-호)")
     parser.add_argument("--pdf", type=str, required=True, help="Path to PDF file")
@@ -31,8 +46,10 @@ def main():
     parser.add_argument("--product-name", type=str, required=True, help="Product name")
     parser.add_argument("--version-id", type=str, required=True, help="Version ID")
     parser.add_argument("--max-clauses", type=int, default=None, help="Max clauses to process")
+    parser.add_argument("--progress-file", type=str, default=None, help="Progress file path for status updates")
     
     args = parser.parse_args()
+    progress_file = args.progress_file
     
     pdf_file = Path(args.pdf)
     product_code = args.product_code
@@ -76,14 +93,19 @@ def main():
     try:
         # Step 1: Parse PDF
         logger.info("\n[Step 1] PDF 파싱 중...")
+        update_progress(progress_file, "PDF 파싱 중...", 5, f"파일: {pdf_file.name}")
+        
         pdf_parser = PolicyPDFParser(str(pdf_file))
         pages = pdf_parser.extract_text_by_page()
         text = pdf_parser.extract_full_text()
         stats['pages'] = len(pages)
         logger.info(f"  ✅ {stats['pages']}페이지 추출")
+        update_progress(progress_file, "PDF 파싱 완료", 10, f"{stats['pages']}페이지 추출됨")
         
         # Step 2: Extract clauses
         logger.info("\n[Step 2] 조항 추출 중...")
+        update_progress(progress_file, "조항 추출 중...", 12, "약관에서 조항 구조 분석 중")
+        
         extractor = ClauseExtractor()
         all_clauses = extractor.extract_clauses(text)
         stats['total_clauses'] = len(all_clauses)
@@ -92,13 +114,17 @@ def main():
         clauses = all_clauses[:max_clauses] if max_clauses else all_clauses
         stats['processed_clauses'] = len(clauses)
         logger.info(f"  ✅ 처리할 조항: {stats['processed_clauses']}개")
+        update_progress(progress_file, "조항 추출 완료", 15, f"총 {stats['processed_clauses']}개 조항 추출")
         
         # Step 3: Extract paragraphs and items
         logger.info("\n[Step 3] 항(項)과 호(號) 추출 중...")
+        
         all_paragraphs = []
         all_items = []
         
-        for clause in clauses:
+        for idx, clause in enumerate(clauses, 1):
+            update_progress(progress_file, "항/호 추출 중...", 15 + int((idx / len(clauses)) * 7), 
+                           f"조항 {idx}/{len(clauses)} - {clause.clause_id}")
             paragraphs, items = extractor.extract_paragraphs_and_items(clause)
             all_paragraphs.extend(paragraphs)
             all_items.extend(items)
@@ -106,9 +132,11 @@ def main():
         stats['paragraphs'] = len(all_paragraphs)
         stats['items'] = len(all_items)
         logger.info(f"  ✅ 항: {stats['paragraphs']}개, 호: {stats['items']}개")
+        update_progress(progress_file, "항/호 추출 완료", 22, f"항 {stats['paragraphs']}개, 호 {stats['items']}개 추출")
         
         # Step 4: Find cross-references (from Paragraphs and Items)
         logger.info("\n[Step 4] 항/호 간 상호 참조 탐색 중...")
+        update_progress(progress_file, "상호 참조 분석 중...", 25, "조항 간 참조 관계 탐색")
         all_references = []
         
         # Find references from Paragraphs
@@ -135,13 +163,18 @@ def main():
         
         stats['cross_references'] = len(all_references)
         logger.info(f"  ✅ {stats['cross_references']}개 상호 참조 발견")
+        update_progress(progress_file, "상호 참조 분석 완료", 30, f"{stats['cross_references']}개 상호 참조 발견")
         
         # Step 5: Generate embeddings
         logger.info("\n[Step 5] 임베딩 생성 중...")
+        total_items_to_embed = len(clauses) + len(all_paragraphs) + len(all_items)
+        embedded_count = 0
         
         # Clause embeddings
         logger.info(f"  [5.1] 조(條) 임베딩 생성 중... ({len(clauses)}개)")
         for i, clause in enumerate(clauses, 1):
+            update_progress(progress_file, "조(條) 임베딩 생성 중...", 30 + int((embedded_count / total_items_to_embed) * 30), 
+                           f"조항 {i}/{len(clauses)} - {clause.clause_id}")
             try:
                 response = openai_client.embeddings.create(
                     model=settings.embedding_model,
@@ -149,14 +182,18 @@ def main():
                 )
                 clause.embedding = response.data[0].embedding
                 stats['embeddings'] += 1
+                embedded_count += 1
             except Exception as e:
                 logger.warning(f"  ✗ 조항 {clause.clause_id} 임베딩 실패: {e}")
+                embedded_count += 1
         
         logger.info(f"  ✅ {len(clauses)}개 조항 임베딩 완료")
         
         # Paragraph embeddings
         logger.info(f"  [5.2] 항(項) 임베딩 생성 중... ({len(all_paragraphs)}개)")
         for i, paragraph in enumerate(all_paragraphs, 1):
+            update_progress(progress_file, "항(項) 임베딩 생성 중...", 30 + int((embedded_count / total_items_to_embed) * 30), 
+                           f"항 {i}/{len(all_paragraphs)} - {paragraph.paragraph_id}")
             try:
                 response = openai_client.embeddings.create(
                     model=settings.embedding_model,
@@ -164,14 +201,18 @@ def main():
                 )
                 paragraph.embedding = response.data[0].embedding
                 stats['embeddings'] += 1
+                embedded_count += 1
             except Exception as e:
                 logger.warning(f"  ✗ 항 {paragraph.paragraph_id} 임베딩 실패: {e}")
+                embedded_count += 1
         
         logger.info(f"  ✅ {len(all_paragraphs)}개 항 임베딩 완료")
         
         # Item embeddings
         logger.info(f"  [5.3] 호(號) 임베딩 생성 중... ({len(all_items)}개)")
         for i, item in enumerate(all_items, 1):
+            update_progress(progress_file, "호(號) 임베딩 생성 중...", 30 + int((embedded_count / total_items_to_embed) * 30), 
+                           f"호 {i}/{len(all_items)} - {item.item_id}")
             try:
                 response = openai_client.embeddings.create(
                     model=settings.embedding_model,
@@ -179,14 +220,18 @@ def main():
                 )
                 item.embedding = response.data[0].embedding
                 stats['embeddings'] += 1
+                embedded_count += 1
             except Exception as e:
                 logger.warning(f"  ✗ 호 {item.item_id} 임베딩 실패: {e}")
+                embedded_count += 1
         
         logger.info(f"  ✅ {len(all_items)}개 호 임베딩 완료")
         logger.info(f"  ✅ 총 {stats['embeddings']}개 임베딩 생성 완료")
+        update_progress(progress_file, "임베딩 생성 완료", 60, f"총 {stats['embeddings']}개 임베딩 생성")
         
         # Step 6: Load to Neo4j
         logger.info("\n[Step 6] Neo4j에 로딩 중...")
+        update_progress(progress_file, "Neo4j 로딩 시작...", 62, "상품 및 버전 생성 중")
         
         with driver.session() as session:
             # Create product
@@ -217,7 +262,10 @@ def main():
             
             # Create articles (조)
             logger.info(f"  조(條) 로딩: {len(clauses)}개")
-            for clause in clauses:
+            update_progress(progress_file, "조(條) 노드 생성 중...", 65, f"0/{len(clauses)} 조 저장됨")
+            for idx, clause in enumerate(clauses, 1):
+                update_progress(progress_file, "조(條) 노드 생성 중...", 65 + int((idx / len(clauses)) * 5), 
+                               f"{idx}/{len(clauses)} - {clause.clause_id}")
                 session.run("""
                     MATCH (ver:PolicyVersion {versionId: $version_id})
                     MERGE (a:Article {articleId: $article_id})
@@ -239,10 +287,13 @@ def main():
                 stats['nodes_created'] += 1
             
             logger.info(f"  ✅ {len(clauses)}개 조 로딩 완료")
+            update_progress(progress_file, "조(條) 노드 생성 완료", 70, f"{len(clauses)}개 조 저장됨")
             
             # Create paragraphs (항)
             logger.info(f"  항(項) 로딩: {len(all_paragraphs)}개")
-            for paragraph in all_paragraphs:
+            for idx, paragraph in enumerate(all_paragraphs, 1):
+                update_progress(progress_file, "항(項) 노드 생성 중...", 70 + int((idx / max(len(all_paragraphs), 1)) * 5), 
+                               f"{idx}/{len(all_paragraphs)} - {paragraph.paragraph_id}")
                 session.run("""
                     MATCH (a:Article {articleId: $parent_article})
                     MERGE (p:Paragraph {paragraphId: $paragraph_id})
@@ -260,10 +311,13 @@ def main():
                 stats['nodes_created'] += 1
             
             logger.info(f"  ✅ {len(all_paragraphs)}개 항 로딩 완료")
+            update_progress(progress_file, "항(項) 노드 생성 완료", 75, f"{len(all_paragraphs)}개 항 저장됨")
             
             # Create items (호)
             logger.info(f"  호(號) 로딩: {len(all_items)}개")
             for i, item in enumerate(all_items, 1):
+                update_progress(progress_file, "호(號) 노드 생성 중...", 75 + int((i / max(len(all_items), 1)) * 5), 
+                               f"{i}/{len(all_items)} - {item.item_id}")
                 try:
                     logger.debug(f"    [{i}/{len(all_items)}] {item.item_id} -> {item.parent_paragraph}")
                     session.run("""
@@ -285,14 +339,19 @@ def main():
                     logger.error(f"  ✗ 호 {item.item_id} 저장 실패: {e}")
             
             logger.info(f"  ✅ {len(all_items)}개 호 로딩 완료")
+            update_progress(progress_file, "호(號) 노드 생성 완료", 80, f"{len(all_items)}개 호 저장됨")
             
             # Create cross-references (Paragraph/Item → Paragraph/Item/Article)
             # - 구체적 항/호 명시: Paragraph/Item로 연결
             # - 조만 언급: Article로 연결
             logger.info(f"  상호 참조 관계 생성: {len(all_references)}개")
+            update_progress(progress_file, "상호 참조 관계 생성 중...", 82, f"0/{len(all_references)} REFERS_TO 관계 생성")
             refs_created = 0
             
-            for ref in all_references:
+            for ref_idx, ref in enumerate(all_references, 1):
+                update_progress(progress_file, "상호 참조 관계 생성 중...", 
+                               82 + int((ref_idx / max(len(all_references), 1)) * 8), 
+                               f"{ref_idx}/{len(all_references)} - {ref['from_id']} → {ref['to_id']}")
                 try:
                     # Determine from_node label and property
                     if ref['from_type'] == 'paragraph':
@@ -338,8 +397,13 @@ def main():
                     logger.warning(f"  ✗ 참조 관계 생성 실패 ({ref['from_id']} -> {ref['to_id']}): {e}")
             
             logger.info(f"  ✅ {refs_created}개 상호 참조 관계 생성 완료")
+            update_progress(progress_file, "상호 참조 관계 생성 완료", 90, f"{refs_created}개 REFERS_TO 관계 생성됨")
+        
+        # Step 7: Generate recommended queries (optional)
+        update_progress(progress_file, "추천 질의 생성 중...", 92, "LLM으로 추천 질의 생성 중")
         
         # Summary
+        update_progress(progress_file, "완료!", 100, f"조: {stats['processed_clauses']}개, 항: {stats['paragraphs']}개, 호: {stats['items']}개 저장")
         logger.info("\n" + "="*80)
         logger.info("✅ 계층적 Ingestion 완료!")
         logger.info("="*80)

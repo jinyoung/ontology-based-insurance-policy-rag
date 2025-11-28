@@ -33,7 +33,7 @@
             <p>Advanced RAG System for Insurance Policies</p>
           </div>
           <div class="footer-links">
-            <p>&copy; 2025 FinGraph. All rights reserved.</p>
+            <p>&copy; 2025 <a href="https://www.uengine.io" target="_blank">uEngine</a>. All rights reserved.</p>
           </div>
         </div>
       </div>
@@ -166,6 +166,18 @@ main {
 .footer-links {
   color: var(--text-light);
   font-size: 0.875rem;
+}
+
+.footer-links a {
+  color: var(--primary-color);
+  text-decoration: none;
+  font-weight: 600;
+  transition: color 0.2s ease;
+}
+
+.footer-links a:hover {
+  color: var(--secondary-color);
+  text-decoration: underline;
 }
 
 /* Page Transition */

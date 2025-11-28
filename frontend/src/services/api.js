@@ -30,6 +30,18 @@ export default {
     return response.data
   },
 
+  // Check existing nodes in graph
+  async checkExistingNodes() {
+    const response = await api.get('/graph/check-existing')
+    return response.data
+  },
+
+  // Clear all nodes from graph
+  async clearGraph() {
+    const response = await api.delete('/graph/clear')
+    return response.data
+  },
+
   // Start ingestion
   async startIngestion(fileId, ingestionData) {
     const response = await api.post(`/ingestion/start?file_id=${fileId}`, ingestionData)

@@ -392,43 +392,147 @@ async def upload_pdf(file: UploadFile = File(...)):
 
 
 async def run_ingestion(job_id: str, pdf_path: str, product_code: str, 
-                       product_name: str, version_id: str, max_clauses: Optional[int]):
+                       product_name: str, version_id: str, max_clauses: Optional[int],
+                       progress_file: str):
     """Background task for ingestion"""
+    import json
+    
     try:
         ingestion_jobs[job_id]["status"] = "processing"
-        ingestion_jobs[job_id]["progress"] = {"stage": "starting", "percent": 0}
+        ingestion_jobs[job_id]["progress"] = {"stage": "PDF 파싱 준비 중...", "percent": 5, "detail": ""}
         
-        # Import ingestion script
-        import subprocess
+        # Get absolute paths
+        project_root = Path(__file__).parent.parent.parent.resolve()
+        script_path = project_root / "scripts" / "ingest_hierarchical.py"
+        abs_pdf_path = Path(pdf_path).resolve()
         
         cmd = [
-            "python3", "scripts/ingest_hierarchical.py",
-            "--pdf", pdf_path,
+            "python3", str(script_path),
+            "--pdf", str(abs_pdf_path),
             "--product-code", product_code,
             "--product-name", product_name,
-            "--version-id", version_id
+            "--version-id", version_id,
+            "--progress-file", progress_file
         ]
         
         if max_clauses:
             cmd.extend(["--max-clauses", str(max_clauses)])
         
-        ingestion_jobs[job_id]["progress"] = {"stage": "processing", "percent": 50}
+        logger.info(f"Running ingestion: {' '.join(cmd)}")
         
-        result = subprocess.run(cmd, capture_output=True, text=True)
+        # Use asyncio subprocess for non-blocking execution
+        process = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd=str(project_root)
+        )
         
-        if result.returncode == 0:
+        # Monitor progress file while process is running
+        while process.returncode is None:
+            try:
+                if os.path.exists(progress_file):
+                    with open(progress_file, 'r') as f:
+                        progress_data = json.load(f)
+                        ingestion_jobs[job_id]["progress"] = progress_data
+            except Exception as e:
+                logger.debug(f"Progress read error: {e}")
+            await asyncio.sleep(0.5)
+            
+            # Check if process has completed
+            try:
+                await asyncio.wait_for(process.wait(), timeout=0.1)
+            except asyncio.TimeoutError:
+                pass
+        
+        # Get final result
+        stdout, stderr = await process.communicate()
+        
+        if process.returncode == 0:
             ingestion_jobs[job_id]["status"] = "completed"
-            ingestion_jobs[job_id]["progress"] = {"stage": "completed", "percent": 100}
+            ingestion_jobs[job_id]["progress"] = {"stage": "완료!", "percent": 100, "detail": "모든 작업이 성공적으로 완료되었습니다."}
             logger.info(f"Ingestion job {job_id} completed")
         else:
             ingestion_jobs[job_id]["status"] = "failed"
-            ingestion_jobs[job_id]["error"] = result.stderr
-            logger.error(f"Ingestion job {job_id} failed: {result.stderr}")
+            error_msg = stderr.decode() if stderr else "Unknown error"
+            ingestion_jobs[job_id]["error"] = error_msg
+            logger.error(f"Ingestion job {job_id} failed: {error_msg}")
+        
+        # Cleanup progress file
+        if os.path.exists(progress_file):
+            os.remove(progress_file)
     
     except Exception as e:
         ingestion_jobs[job_id]["status"] = "failed"
         ingestion_jobs[job_id]["error"] = str(e)
         logger.error(f"Ingestion job {job_id} error: {e}")
+
+
+@app.get("/api/v1/graph/check-existing")
+async def check_existing_nodes():
+    """
+    Check if there are existing nodes in Neo4j
+    """
+    try:
+        from neo4j import GraphDatabase
+        driver = GraphDatabase.driver(
+            settings.neo4j_uri,
+            auth=(settings.neo4j_username, settings.neo4j_password)
+        )
+        
+        with driver.session() as session:
+            result = session.run("""
+                MATCH (n)
+                WITH labels(n) AS labels, count(*) AS count
+                RETURN labels[0] AS label, count
+                ORDER BY count DESC
+            """)
+            
+            nodes = {}
+            total = 0
+            for record in result:
+                label = record['label']
+                count = record['count']
+                nodes[label] = count
+                total += count
+        
+        driver.close()
+        
+        return {
+            "has_existing": total > 0,
+            "total_nodes": total,
+            "nodes_by_type": nodes
+        }
+    
+    except Exception as e:
+        logger.error(f"Error checking existing nodes: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/api/v1/graph/clear")
+async def clear_graph():
+    """
+    Clear all nodes from Neo4j
+    """
+    try:
+        from neo4j import GraphDatabase
+        driver = GraphDatabase.driver(
+            settings.neo4j_uri,
+            auth=(settings.neo4j_username, settings.neo4j_password)
+        )
+        
+        with driver.session() as session:
+            # Delete all nodes and relationships
+            session.run("MATCH (n) DETACH DELETE n")
+        
+        driver.close()
+        logger.info("Graph cleared successfully")
+        
+        return {"status": "success", "message": "All nodes deleted"}
+    
+    except Exception as e:
+        logger.error(f"Error clearing graph: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/api/v1/ingestion/start", response_model=IngestionStatus)
@@ -456,12 +560,17 @@ async def start_ingestion(
         
         # Create job
         job_id = str(uuid.uuid4())
+        
+        # Create progress file path
+        progress_file = Path(f"/tmp/ingestion_progress_{job_id}.json")
+        
         ingestion_jobs[job_id] = {
             "status": "pending",
             "file_id": file_id,
             "pdf_path": pdf_path,
             "product_code": request.product_code,
-            "progress": None,
+            "progress": {"stage": "초기화 중...", "percent": 0, "detail": ""},
+            "progress_file": str(progress_file),
             "error": None
         }
         
@@ -473,7 +582,8 @@ async def start_ingestion(
             request.product_code,
             request.product_name,
             request.version_id,
-            request.max_clauses
+            request.max_clauses,
+            str(progress_file)
         )
         
         logger.info(f"Ingestion job {job_id} started")
@@ -481,7 +591,7 @@ async def start_ingestion(
         return IngestionStatus(
             job_id=job_id,
             status="pending",
-            progress=None,
+            progress={"stage": "초기화 중...", "percent": 0, "detail": ""},
             error=None
         )
     
