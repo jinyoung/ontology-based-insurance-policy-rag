@@ -719,6 +719,279 @@ async def get_recommended_queries():
         }
 
 
+from fastapi.responses import StreamingResponse
+import json
+import re
+
+@app.post("/api/v1/query/stream")
+async def query_stream(request: DetailedQueryRequest):
+    """
+    Stream query processing with step-by-step progress updates
+    """
+    async def generate():
+        try:
+            import numpy as np
+            from neo4j import GraphDatabase
+            from openai import OpenAI
+            
+            driver = GraphDatabase.driver(
+                settings.neo4j_uri,
+                auth=(settings.neo4j_username, settings.neo4j_password)
+            )
+            openai_client = OpenAI(api_key=settings.openai_api_key)
+            
+            # Step 1: Generate query embedding
+            yield f"data: {json.dumps({'step': 1, 'stage': '질문 분석 중...', 'detail': request.question[:50], 'percent': 10})}\n\n"
+            await asyncio.sleep(0.1)
+            
+            response = openai_client.embeddings.create(
+                model=settings.embedding_model,
+                input=request.question
+            )
+            query_embedding = response.data[0].embedding
+            
+            yield f"data: {json.dumps({'step': 1, 'stage': '질문 임베딩 완료', 'status': 'completed', 'percent': 20})}\n\n"
+            await asyncio.sleep(0.1)
+            
+            # Step 2: Vector search for candidates
+            yield f"data: {json.dumps({'step': 2, 'stage': '유사 조항 검색 중...', 'detail': 'Top-K 벡터 유사도 검색', 'percent': 25})}\n\n"
+            await asyncio.sleep(0.1)
+            
+            def cosine_similarity(vec1, vec2):
+                if not vec1 or not vec2:
+                    return 0.0
+                v1 = np.array(vec1)
+                v2 = np.array(vec2)
+                return float(np.dot(v1, v2) / (np.linalg.norm(v1) * np.linalg.norm(v2)))
+            
+            with driver.session() as session:
+                candidates = []
+                
+                for label, id_prop in [('Article', 'articleId'), ('Paragraph', 'paragraphId'), ('Item', 'itemId')]:
+                    try:
+                        result = session.run(f"""
+                            MATCH (n:{label})
+                            WHERE n.embedding IS NOT NULL
+                            RETURN n.{id_prop} AS id, 
+                                   COALESCE(n.title, n.text) AS text,
+                                   n.embedding AS embedding,
+                                   '{label}' AS type
+                        """)
+                        
+                        for record in result:
+                            embedding = record['embedding']
+                            if embedding:
+                                score = cosine_similarity(query_embedding, embedding)
+                                candidates.append({
+                                    'id': record['id'],
+                                    'text': record['text'][:100] if record['text'] else '',
+                                    'score': score,
+                                    'type': record['type']
+                                })
+                    except Exception as e:
+                        logger.warning(f"Vector search error for {label}: {e}")
+                
+                candidates.sort(key=lambda x: x['score'], reverse=True)
+                top_candidates = candidates[:10]
+            
+            yield f"data: {json.dumps({'step': 2, 'stage': '유사 조항 검색 완료', 'status': 'completed', 'percent': 40, 'candidates_count': len(top_candidates), 'candidates': [c['id'] for c in top_candidates[:5]]})}\n\n"
+            await asyncio.sleep(0.1)
+            
+            # Step 3: Find parent articles
+            yield f"data: {json.dumps({'step': 3, 'stage': '상위 조(條) 추출 중...', 'detail': '후보들의 상위 조항 탐색', 'percent': 45})}\n\n"
+            await asyncio.sleep(0.1)
+            
+            article_ids = set()
+            for c in top_candidates:
+                if c['type'] == 'Article':
+                    article_ids.add(c['id'])
+                else:
+                    match = re.match(r'(제\d+조)', c['id'])
+                    if match:
+                        article_ids.add(match.group(1))
+            
+            yield f"data: {json.dumps({'step': 3, 'stage': '상위 조 추출 완료', 'status': 'completed', 'percent': 50, 'articles': list(article_ids)})}\n\n"
+            await asyncio.sleep(0.1)
+            
+            # Step 4: LLM selects best article
+            yield f"data: {json.dumps({'step': 4, 'stage': 'LLM으로 최적 조항 선별 중...', 'detail': f'{len(article_ids)}개 후보 중 선택', 'percent': 55})}\n\n"
+            await asyncio.sleep(0.1)
+            
+            selected_article_id = None
+            main_record = None
+            
+            if article_ids:
+                with driver.session() as session:
+                    articles_info = []
+                    for art_id in article_ids:
+                        result = session.run("""
+                            MATCH (a:Article {articleId: $article_id})
+                            RETURN a.articleId as id, a.title as title, a.text as text
+                        """, article_id=art_id)
+                        record = result.single()
+                        if record:
+                            articles_info.append({
+                                'id': record['id'],
+                                'title': record['title'],
+                                'text': record['text'][:200] if record['text'] else ''
+                            })
+                    
+                    if articles_info:
+                        selection_prompt = f"""질문: {request.question}
+
+다음 조항들 중 이 질문에 가장 관련있는 조항 하나를 선택하세요:
+
+{chr(10).join([f"- {a['id']}: {a['title']}" for a in articles_info])}
+
+가장 관련있는 조항 ID만 답하세요 (예: 제6조):"""
+
+                        selection_response = openai_client.chat.completions.create(
+                            model=settings.llm_model,
+                            messages=[{"role": "user", "content": selection_prompt}],
+                            temperature=0.1,
+                            max_tokens=50
+                        )
+                        
+                        selected_text = selection_response.choices[0].message.content.strip()
+                        match = re.search(r'제\d+조', selected_text)
+                        selected_article_id = match.group(0) if match else articles_info[0]['id']
+            
+            if selected_article_id:
+                yield f"data: {json.dumps({'step': 4, 'stage': '최적 조항 선별 완료', 'status': 'completed', 'percent': 65, 'selected_article': selected_article_id})}\n\n"
+            else:
+                yield f"data: {json.dumps({'step': 4, 'stage': '관련 조항 없음', 'status': 'warning', 'percent': 65})}\n\n"
+                driver.close()
+                yield f"data: {json.dumps({'step': 6, 'stage': '완료', 'percent': 100, 'result': {'answer': '관련 조항을 찾을 수 없습니다.', 'citations': [], 'confidence': 0}})}\n\n"
+                return
+            
+            await asyncio.sleep(0.1)
+            
+            # Step 5: Get referenced nodes
+            yield f"data: {json.dumps({'step': 5, 'stage': '참조 조항 추출 중...', 'detail': f'{selected_article_id}의 REFERS_TO 관계 탐색', 'percent': 70})}\n\n"
+            await asyncio.sleep(0.1)
+            
+            references = []
+            with driver.session() as session:
+                main_result = session.run("""
+                    MATCH (a:Article {articleId: $article_id})
+                    RETURN a.articleId as id, a.title as title, a.text as text
+                """, article_id=selected_article_id)
+                main_record = main_result.single()
+                
+                refs_result = session.run("""
+                    MATCH (a:Article {articleId: $article_id})
+                    OPTIONAL MATCH (a)-[:HAS_PARAGRAPH]->(p:Paragraph)
+                    OPTIONAL MATCH (p)-[:HAS_ITEM]->(i:Item)
+                    WITH a, COLLECT(DISTINCT p) AS paragraphs, COLLECT(DISTINCT i) AS items
+                    UNWIND paragraphs + items AS node
+                    MATCH (node)-[:REFERS_TO]->(ref)
+                    RETURN DISTINCT labels(ref)[0] AS ref_type,
+                           CASE 
+                             WHEN ref.articleId IS NOT NULL THEN ref.articleId
+                             WHEN ref.paragraphId IS NOT NULL THEN ref.paragraphId
+                             ELSE ref.itemId
+                           END AS ref_id,
+                           COALESCE(ref.title, '') AS ref_title,
+                           COALESCE(ref.text, ref.fullText, '') AS ref_text
+                """, article_id=selected_article_id)
+                
+                for ref in refs_result:
+                    if ref['ref_id']:
+                        references.append({
+                            'type': ref['ref_type'],
+                            'id': ref['ref_id'],
+                            'title': ref['ref_title'],
+                            'text': ref['ref_text'][:200] if ref['ref_text'] else ''
+                        })
+            
+            yield f"data: {json.dumps({'step': 5, 'stage': '참조 조항 추출 완료', 'status': 'completed', 'percent': 80, 'references': [r['id'] for r in references]})}\n\n"
+            await asyncio.sleep(0.1)
+            
+            # Step 6: Generate answer with LLM
+            yield f"data: {json.dumps({'step': 6, 'stage': 'LLM 답변 생성 중...', 'detail': '컨텍스트 기반 답변 생성', 'percent': 85})}\n\n"
+            await asyncio.sleep(0.1)
+            
+            context_parts = []
+            if main_record:
+                context_parts.append(f"# {main_record['id']}: {main_record['title']}\n\n{main_record['text']}")
+            
+            for ref in references:
+                context_parts.append(f"\n## [참조] {ref['id']}: {ref['title']}\n\n{ref['text']}")
+            
+            context = "\n".join(context_parts)
+            
+            answer_prompt = f"""당신은 보험약관 전문가입니다. 다음 약관 내용을 바탕으로 질문에 정확하게 답변해주세요.
+
+약관 내용:
+{context}
+
+질문: {request.question}
+
+답변:"""
+
+            answer_response = openai_client.chat.completions.create(
+                model=settings.llm_model,
+                messages=[{"role": "user", "content": answer_prompt}],
+                temperature=0.3
+            )
+            
+            answer = answer_response.choices[0].message.content
+            
+            citations = []
+            if main_record:
+                citations.append({
+                    'clause_id': main_record['id'],
+                    'title': main_record['title'],
+                    'text': main_record['text'][:200] if main_record['text'] else ''
+                })
+            for ref in references[:3]:
+                citations.append({
+                    'clause_id': ref['id'],
+                    'title': ref['title'],
+                    'text': ref['text'][:200]
+                })
+            
+            driver.close()
+            
+            # Build sources for graph visualization
+            sources = []
+            if main_record:
+                sources.append({'id': main_record['id'], 'type': 'Article', 'title': main_record['title']})
+            for ref in references:
+                sources.append({'id': ref['id'], 'type': ref['type'], 'title': ref['title']})
+            
+            final_result = {
+                'answer': answer,
+                'confidence': 0.9,
+                'citations': citations,
+                'process': {
+                    'candidates_count': len(top_candidates),
+                    'selected_article': {
+                        'id': selected_article_id,
+                        'title': main_record['title'] if main_record else ''
+                    },
+                    'references': len(references),
+                    'sources': sources
+                }
+            }
+            
+            yield f"data: {json.dumps({'step': 6, 'stage': '답변 생성 완료', 'status': 'completed', 'percent': 100, 'result': final_result})}\n\n"
+            
+        except Exception as e:
+            logger.error(f"Stream query error: {e}")
+            yield f"data: {json.dumps({'step': 0, 'stage': 'error', 'error': str(e), 'percent': 0})}\n\n"
+    
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no"
+        }
+    )
+
+
 if __name__ == "__main__":
     import uvicorn
     

@@ -1,29 +1,27 @@
 <template>
   <div class="query-page">
-    <div class="container">
-      <div class="query-header">
-        <h1>Intelligent Query</h1>
-        <p>자연어로 자유롭게 질문하세요. AI가 최적의 답변을 찾아드립니다.</p>
+    <div class="page-header">
+      <div class="container">
+        <h1 class="page-title">Intelligent Query</h1>
+        <p class="page-subtitle">자연어로 보험약관에 대해 질문하세요</p>
       </div>
+    </div>
 
-      <!-- Query Input Section -->
+    <div class="container content-container">
+      <!-- Query Input -->
       <div class="query-input-section">
-        <div class="input-wrapper">
-          <textarea
-            v-model="question"
-            class="query-textarea"
-            placeholder="질문을 입력하세요..."
-            :disabled="querying"
-            @keydown.enter.prevent="submitQuery"
-          ></textarea>
-          <div class="input-actions">
-            <span class="hint">Enter키를 눌러 전송</span>
-            <button
-              @click="submitQuery"
-              :disabled="!question.trim() || querying"
-              class="btn-send"
-            >
-              <span v-if="querying" class="spinner"></span>
+        <div class="query-input-card">
+          <div class="input-wrapper">
+            <input
+              type="text"
+              v-model="question"
+              @keyup.enter="submitQuery"
+              placeholder="질문을 입력하세요... (예: 청약 철회는 어떻게 하나요?)"
+              class="query-input"
+              :disabled="isLoading"
+            />
+            <button @click="submitQuery" :disabled="!question.trim() || isLoading" class="send-button">
+              <span v-if="isLoading" class="spinner"></span>
               <span v-else>➤</span>
             </button>
           </div>
@@ -31,118 +29,136 @@
       </div>
 
       <!-- Recommended Queries -->
-      <div v-if="!querying && !result" class="recommended-section">
-        <div class="section-label">추천 질의</div>
-        
-        <div v-if="loadingRecommended" class="loading-skeleton">
-          <div class="skeleton-card" v-for="i in 3" :key="i"></div>
-        </div>
-
-        <div v-else class="recommended-grid">
-          <div
-            v-for="(query, index) in recommendedQueries"
-            :key="index"
+      <div v-if="!queryResult && !isLoading && recommendedQueries.length > 0" class="recommended-section">
+        <h3 class="section-title">💡 추천 질문</h3>
+        <div class="recommended-grid">
+          <div 
+            v-for="(rec, index) in recommendedQueries" 
+            :key="index" 
             class="recommended-card"
-            @click="selectRecommendedQuery(query.question)"
+            @click="selectRecommendedQuery(rec.question)"
           >
-            <div class="card-icon">💡</div>
-            <div class="card-content">
-              <div class="query-text">{{ query.question }}</div>
-              <div class="query-desc">{{ query.description }}</div>
-              <div class="tags">
-                <span
-                  v-for="clause in query.expected_clauses"
-                  :key="clause"
-                  class="tag"
-                >
-                  {{ clause }}
-                </span>
+            <div class="rec-question">{{ rec.question }}</div>
+            <div class="rec-description">{{ rec.description }}</div>
+            <div class="rec-clauses">
+              <span v-for="clause in rec.expected_clauses" :key="clause" class="clause-badge">
+                {{ clause }}
+              </span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Processing Steps -->
+      <div v-if="isLoading" class="processing-section">
+        <div class="processing-card">
+          <h3 class="processing-title">🔍 질의 처리 중...</h3>
+          
+          <div class="progress-bar-wrapper">
+            <div class="progress-bar-bg">
+              <div class="progress-bar-fill" :style="{ width: currentProgress + '%' }"></div>
+            </div>
+            <span class="progress-percent">{{ currentProgress }}%</span>
+          </div>
+          
+          <div class="steps-timeline">
+            <div 
+              v-for="step in processingSteps" 
+              :key="step.id"
+              class="step-item"
+              :class="{ 
+                active: currentStep === step.id, 
+                completed: completedSteps.includes(step.id),
+                pending: currentStep < step.id
+              }"
+            >
+              <div class="step-icon">
+                <span v-if="completedSteps.includes(step.id)">✓</span>
+                <span v-else-if="currentStep === step.id" class="spinner-small"></span>
+                <span v-else>{{ step.id }}</span>
+              </div>
+              <div class="step-content">
+                <div class="step-name">{{ step.name }}</div>
+                <div v-if="currentStep === step.id && stepDetail" class="step-detail">
+                  {{ stepDetail }}
+                </div>
+                <div v-if="step.id === 2 && stepData.candidates" class="step-data">
+                  후보: {{ stepData.candidates.join(', ') }}
+                </div>
+                <div v-if="step.id === 3 && stepData.articles" class="step-data">
+                  조항: {{ stepData.articles.join(', ') }}
+                </div>
+                <div v-if="step.id === 4 && stepData.selected_article" class="step-data">
+                  선택됨: <strong>{{ stepData.selected_article }}</strong>
+                </div>
+                <div v-if="step.id === 5 && stepData.references" class="step-data">
+                  참조: {{ stepData.references.join(', ') || '없음' }}
+                </div>
               </div>
             </div>
           </div>
         </div>
       </div>
 
-      <!-- Result Section -->
-      <div v-if="result || querying" class="result-section">
-        <!-- Loading State -->
-        <div v-if="querying" class="processing-state">
-          <div class="processing-steps">
-            <div class="step active">질문 분석 중...</div>
-            <div class="step">관련 조항 검색 중...</div>
-            <div class="step">답변 생성 중...</div>
+      <!-- Query Result -->
+      <div v-if="queryResult" class="result-section">
+        <!-- Process Visualization -->
+        <div class="process-card">
+          <div class="card-header">
+            <span class="header-icon">🌲</span>
+            <h3>추론 과정</h3>
+          </div>
+          
+          <div class="process-summary">
+            <div class="summary-item">
+              <span class="label">검색된 후보</span>
+              <span class="value">{{ queryResult.process?.candidates_count || 0 }}개</span>
+            </div>
+            <div class="summary-item highlight">
+              <span class="label">선택된 조항</span>
+              <span class="value">{{ queryResult.process?.selected_article?.id }}</span>
+            </div>
+            <div class="summary-item">
+              <span class="label">참조 조항</span>
+              <span class="value">{{ queryResult.process?.references || 0 }}개</span>
+            </div>
+          </div>
+          
+          <GraphVisualization 
+            v-if="queryResult.process?.sources"
+            :sources="queryResult.process.sources" 
+            :selectedArticle="queryResult.process.selected_article" 
+          />
+        </div>
+
+        <!-- Answer -->
+        <div class="answer-card">
+          <div class="card-header">
+            <span class="header-icon">✨</span>
+            <h3>AI 답변</h3>
+            <span class="confidence-badge" :class="getConfidenceClass(queryResult.confidence)">
+              신뢰도 {{ Math.round((queryResult.confidence || 0) * 100) }}%
+            </span>
+          </div>
+          
+          <div class="answer-content">
+            <p>{{ queryResult.answer }}</p>
+          </div>
+          
+          <div v-if="queryResult.citations?.length > 0" class="citations-section">
+            <h4>📚 참조 근거</h4>
+            <div v-for="(citation, index) in queryResult.citations" :key="index" class="citation-item">
+              <div class="citation-header">
+                <span class="citation-id">{{ citation.clause_id }}</span>
+                <span class="citation-title">{{ citation.title }}</span>
+              </div>
+              <p class="citation-text">{{ citation.text }}</p>
+            </div>
           </div>
         </div>
 
-        <div v-if="result" class="result-container">
-          <!-- Process Visualization -->
-          <div v-if="process" class="process-card">
-            <div class="card-header">
-              <span class="icon">🌲</span>
-              <h3>추론 과정 시각화</h3>
-            </div>
-            
-            <div class="process-stats">
-              <div class="stat">
-                <span class="label">후보 조항</span>
-                <span class="value">{{ process.candidates_count }}개</span>
-              </div>
-              <div class="stat-divider"></div>
-              <div class="stat">
-                <span class="label">선택 조항</span>
-                <span class="value highlight">{{ process.selected_article.id }}</span>
-              </div>
-              <div class="stat-divider"></div>
-              <div class="stat">
-                <span class="label">참조 조항</span>
-                <span class="value">{{ process.references }}개</span>
-              </div>
-            </div>
-
-            <GraphVisualization
-              v-if="process.sources"
-              :sources="process.sources"
-              :selected-article="process.selected_article"
-            />
-          </div>
-
-          <!-- AI Answer -->
-          <div class="answer-card">
-            <div class="card-header">
-              <span class="icon">✨</span>
-              <h3>AI 답변</h3>
-              <div class="confidence-badge" :class="getConfidenceClass(result.confidence)">
-                신뢰도 {{ (result.confidence * 100).toFixed(0) }}%
-              </div>
-            </div>
-            
-            <div class="answer-body">
-              <div class="answer-text">{{ result.answer }}</div>
-            </div>
-
-            <div v-if="result.citations && result.citations.length > 0" class="citations-area">
-              <h4>참조된 근거 자료</h4>
-              <div class="citations-list">
-                <div
-                  v-for="(citation, index) in result.citations"
-                  :key="index"
-                  class="citation-box"
-                >
-                  <div class="citation-header">
-                    <span class="citation-id">{{ citation.clause_id }}</span>
-                    <span class="citation-title">{{ citation.title }}</span>
-                  </div>
-                  <div v-if="citation.text" class="citation-snippet">
-                    {{ citation.text }}
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          <button @click="resetQuery" class="btn btn-secondary btn-reset">
-            새로운 질문하기
-          </button>
+        <div class="action-buttons">
+          <button @click="resetQuery" class="btn btn-primary">새로운 질문하기</button>
         </div>
       </div>
     </div>
@@ -156,79 +172,159 @@ import GraphVisualization from '../components/GraphVisualization.vue'
 
 export default {
   name: 'Query',
-  components: {
-    GraphVisualization
-  },
+  components: { GraphVisualization },
   setup() {
     const question = ref('')
-    const querying = ref(false)
-    const result = ref(null)
-    const process = ref(null)
-    
-    const loadingRecommended = ref(false)
+    const isLoading = ref(false)
+    const queryResult = ref(null)
     const recommendedQueries = ref([])
+    
+    // Processing state
+    const currentStep = ref(0)
+    const currentProgress = ref(0)
+    const completedSteps = ref([])
+    const stepDetail = ref('')
+    const stepData = ref({})
+    
+    const processingSteps = [
+      { id: 1, name: '질문 분석 및 임베딩 생성' },
+      { id: 2, name: '유사 조항 검색 (벡터 유사도)' },
+      { id: 3, name: '상위 조(條) 추출' },
+      { id: 4, name: 'LLM으로 최적 조항 선택' },
+      { id: 5, name: '참조 조항(REFERS_TO) 탐색' },
+      { id: 6, name: 'LLM 답변 생성' }
+    ]
 
-    const loadRecommendedQueries = async () => {
-      loadingRecommended.value = true
+    onMounted(async () => {
       try {
-        const data = await api.getRecommendedQueries()
-        recommendedQueries.value = data.queries || []
+        const result = await api.getRecommendedQueries()
+        recommendedQueries.value = result.queries || []
       } catch (error) {
         console.error('Failed to load recommended queries:', error)
-      } finally {
-        loadingRecommended.value = false
       }
-    }
+    })
 
-    const selectRecommendedQuery = (query) => {
-      question.value = query
+    const selectRecommendedQuery = (q) => {
+      question.value = q
+      submitQuery()
     }
 
     const submitQuery = async () => {
-      if (!question.value.trim()) return
-
-      querying.value = true
-      result.value = null
-      process.value = null
-
+      if (!question.value.trim() || isLoading.value) return
+      
+      isLoading.value = true
+      queryResult.value = null
+      currentStep.value = 0
+      currentProgress.value = 0
+      completedSteps.value = []
+      stepDetail.value = ''
+      stepData.value = {}
+      
       try {
-        const response = await api.queryDetailed(question.value, true)
-        result.value = response
-        process.value = response.process
+        // Use EventSource for streaming
+        const response = await fetch('/api/v1/query/stream', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            question: question.value,
+            include_process: true
+          })
+        })
+        
+        const reader = response.body.getReader()
+        const decoder = new TextDecoder()
+        
+        while (true) {
+          const { done, value } = await reader.read()
+          if (done) break
+          
+          const text = decoder.decode(value)
+          const lines = text.split('\n')
+          
+          for (const line of lines) {
+            if (line.startsWith('data: ')) {
+              try {
+                const data = JSON.parse(line.slice(6))
+                handleStreamData(data)
+              } catch (e) {
+                // Ignore parse errors
+              }
+            }
+          }
+        }
+        
       } catch (error) {
-        alert('질의 처리 실패: ' + error.message)
+        console.error('Query failed:', error)
+        alert('질의 처리 중 오류가 발생했습니다.')
       } finally {
-        querying.value = false
+        isLoading.value = false
+      }
+    }
+    
+    const handleStreamData = (data) => {
+      if (data.percent) {
+        currentProgress.value = data.percent
+      }
+      
+      if (data.step) {
+        currentStep.value = data.step
+        
+        if (data.status === 'completed' && !completedSteps.value.includes(data.step)) {
+          completedSteps.value.push(data.step)
+        }
+        
+        if (data.detail) {
+          stepDetail.value = data.detail
+        }
+        
+        // Store step-specific data
+        if (data.candidates) {
+          stepData.value.candidates = data.candidates
+        }
+        if (data.articles) {
+          stepData.value.articles = data.articles
+        }
+        if (data.selected_article) {
+          stepData.value.selected_article = data.selected_article
+        }
+        if (data.references) {
+          stepData.value.references = data.references
+        }
+        
+        // Final result
+        if (data.result) {
+          queryResult.value = data.result
+        }
+      }
+      
+      if (data.error) {
+        alert(`오류: ${data.error}`)
       }
     }
 
     const resetQuery = () => {
       question.value = ''
-      result.value = null
-      process.value = null
+      queryResult.value = null
+      currentStep.value = 0
+      currentProgress.value = 0
+      completedSteps.value = []
+      stepDetail.value = ''
+      stepData.value = {}
     }
-
-    const getConfidenceClass = (score) => {
-      if (score >= 0.8) return 'high'
-      if (score >= 0.5) return 'medium'
+    
+    const getConfidenceClass = (confidence) => {
+      if (confidence >= 0.8) return 'high'
+      if (confidence >= 0.5) return 'medium'
       return 'low'
     }
 
-    onMounted(() => {
-      loadRecommendedQueries()
-    })
-
     return {
-      question,
-      querying,
-      result,
-      process,
-      loadingRecommended,
-      recommendedQueries,
-      selectRecommendedQuery,
-      submitQuery,
-      resetQuery,
-      getConfidenceClass
+      question, isLoading, queryResult, recommendedQueries,
+      currentStep, currentProgress, completedSteps, stepDetail, stepData,
+      processingSteps,
+      selectRecommendedQuery, submitQuery, resetQuery, getConfidenceClass
     }
   }
 }
@@ -237,182 +333,301 @@ export default {
 <style scoped>
 .query-page {
   min-height: 100vh;
-  background-color: #F8FAFC;
+  background: linear-gradient(180deg, #F8FAFC 0%, #EEF2FF 100%);
   padding-bottom: 4rem;
 }
 
-.query-header {
-  text-align: center;
+.page-header {
+  background: linear-gradient(135deg, #312E81 0%, #4F46E5 100%);
+  color: white;
   padding: 3rem 0;
+  margin-bottom: 2rem;
+  border-bottom-left-radius: 2rem;
+  border-bottom-right-radius: 2rem;
 }
 
-.query-header h1 {
+.page-title {
   font-size: 2.5rem;
   font-weight: 800;
-  color: var(--text-color);
   margin-bottom: 0.5rem;
 }
 
-.query-header p {
-  color: var(--text-light);
+.page-subtitle {
+  opacity: 0.9;
   font-size: 1.125rem;
 }
 
+.content-container {
+  max-width: 900px;
+}
+
+/* Query Input */
 .query-input-section {
-  max-width: 800px;
-  margin: 0 auto 3rem;
+  margin-bottom: 2rem;
+}
+
+.query-input-card {
+  background: white;
+  border-radius: 1.5rem;
+  padding: 0.5rem;
+  box-shadow: 0 10px 40px rgba(79, 70, 229, 0.15);
 }
 
 .input-wrapper {
-  background: white;
-  border-radius: 1.5rem;
-  box-shadow: var(--shadow-lg);
-  padding: 1rem;
-  border: 1px solid rgba(0,0,0,0.05);
-  position: relative;
-  transition: all 0.3s ease;
-}
-
-.input-wrapper:focus-within {
-  box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04);
-  transform: translateY(-2px);
-  border-color: var(--primary-color);
-}
-
-.query-textarea {
-  width: 100%;
-  border: none;
-  resize: none;
-  font-size: 1.125rem;
-  padding: 1rem;
-  min-height: 80px;
-  outline: none;
-  color: var(--text-color);
-  background: transparent;
-}
-
-.input-actions {
   display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 0.5rem 1rem 0;
-  border-top: 1px solid var(--border-color);
+  gap: 0.5rem;
 }
 
-.hint {
-  font-size: 0.75rem;
-  color: var(--text-light);
+.query-input {
+  flex: 1;
+  padding: 1.25rem 1.5rem;
+  border: none;
+  border-radius: 1.25rem;
+  font-size: 1.125rem;
+  background: transparent;
+  outline: none;
 }
 
-.btn-send {
-  background: var(--primary-color);
+.query-input::placeholder {
+  color: #9CA3AF;
+}
+
+.send-button {
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #4F46E5 0%, #7C3AED 100%);
   color: white;
   border: none;
-  width: 2.5rem;
-  height: 2.5rem;
-  border-radius: 50%;
+  font-size: 1.5rem;
+  cursor: pointer;
   display: flex;
   align-items: center;
   justify-content: center;
-  cursor: pointer;
-  transition: all 0.2s;
-  font-size: 1.2rem;
+  transition: all 0.3s ease;
 }
 
-.btn-send:hover:not(:disabled) {
-  transform: scale(1.1);
-  background: var(--secondary-color);
+.send-button:hover:not(:disabled) {
+  transform: scale(1.05);
+  box-shadow: 0 4px 20px rgba(79, 70, 229, 0.4);
 }
 
-.btn-send:disabled {
+.send-button:disabled {
   opacity: 0.5;
   cursor: not-allowed;
 }
 
-/* Recommended Queries */
+/* Recommended Section */
 .recommended-section {
-  max-width: 1000px;
-  margin: 0 auto;
+  margin-bottom: 2rem;
 }
 
-.section-label {
-  font-size: 0.875rem;
+.section-title {
+  font-size: 1.25rem;
   font-weight: 700;
-  text-transform: uppercase;
-  color: var(--text-light);
+  color: var(--text-color);
   margin-bottom: 1rem;
-  letter-spacing: 0.05em;
 }
 
 .recommended-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
-  gap: 1.5rem;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 1rem;
 }
 
 .recommended-card {
   background: white;
   border-radius: 1rem;
-  padding: 1.5rem;
-  box-shadow: var(--shadow);
-  border: 1px solid transparent;
+  padding: 1.25rem;
   cursor: pointer;
   transition: all 0.3s ease;
-  display: flex;
-  gap: 1rem;
+  border: 1px solid transparent;
 }
 
 .recommended-card:hover {
-  transform: translateY(-4px);
-  box-shadow: var(--shadow-md);
   border-color: var(--primary-color);
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-md);
 }
 
-.card-icon {
-  font-size: 1.5rem;
-}
-
-.query-text {
+.rec-question {
   font-weight: 600;
   color: var(--text-color);
   margin-bottom: 0.5rem;
   line-height: 1.4;
 }
 
-.query-desc {
+.rec-description {
   font-size: 0.875rem;
   color: var(--text-light);
-  margin-bottom: 1rem;
+  margin-bottom: 0.75rem;
 }
 
-.tags {
+.rec-clauses {
   display: flex;
   gap: 0.5rem;
   flex-wrap: wrap;
 }
 
-.tag {
-  background: var(--bg-light);
-  color: var(--text-light);
+.clause-badge {
+  background: linear-gradient(135deg, #EEF2FF 0%, #E0E7FF 100%);
+  color: #4F46E5;
+  padding: 0.25rem 0.75rem;
+  border-radius: 1rem;
   font-size: 0.75rem;
-  padding: 0.25rem 0.5rem;
-  border-radius: 0.25rem;
-  font-weight: 500;
+  font-weight: 600;
 }
 
-/* Results */
+/* Processing Section */
+.processing-section {
+  margin-bottom: 2rem;
+}
+
+.processing-card {
+  background: white;
+  border-radius: 1.5rem;
+  padding: 2rem;
+  box-shadow: var(--shadow-lg);
+}
+
+.processing-title {
+  font-size: 1.25rem;
+  font-weight: 700;
+  margin-bottom: 1.5rem;
+  color: var(--text-color);
+}
+
+.progress-bar-wrapper {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  margin-bottom: 2rem;
+}
+
+.progress-bar-bg {
+  flex: 1;
+  height: 8px;
+  background: #E5E7EB;
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.progress-bar-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #4F46E5 0%, #7C3AED 100%);
+  border-radius: 4px;
+  transition: width 0.3s ease;
+}
+
+.progress-percent {
+  font-weight: 700;
+  color: var(--primary-color);
+  min-width: 50px;
+  text-align: right;
+}
+
+.steps-timeline {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.step-item {
+  display: flex;
+  gap: 1rem;
+  padding: 1rem;
+  border-radius: 0.75rem;
+  background: #F9FAFB;
+  transition: all 0.3s ease;
+}
+
+.step-item.active {
+  background: linear-gradient(135deg, #EEF2FF 0%, #E0E7FF 100%);
+  border-left: 3px solid var(--primary-color);
+}
+
+.step-item.completed {
+  background: #ECFDF5;
+  border-left: 3px solid #10B981;
+}
+
+.step-item.pending {
+  opacity: 0.5;
+}
+
+.step-icon {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: white;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  font-size: 0.875rem;
+  color: var(--text-light);
+  box-shadow: var(--shadow-sm);
+}
+
+.step-item.completed .step-icon {
+  background: #10B981;
+  color: white;
+}
+
+.step-item.active .step-icon {
+  background: var(--primary-color);
+  color: white;
+}
+
+.step-content {
+  flex: 1;
+}
+
+.step-name {
+  font-weight: 600;
+  color: var(--text-color);
+}
+
+.step-detail {
+  font-size: 0.875rem;
+  color: var(--text-light);
+  margin-top: 0.25rem;
+}
+
+.step-data {
+  font-size: 0.8125rem;
+  color: var(--primary-color);
+  margin-top: 0.5rem;
+  padding: 0.5rem;
+  background: white;
+  border-radius: 0.5rem;
+}
+
+.spinner-small {
+  width: 16px;
+  height: 16px;
+  border: 2px solid rgba(255,255,255,0.3);
+  border-top-color: white;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+/* Result Section */
 .result-section {
-  max-width: 800px;
-  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
 }
 
 .process-card, .answer-card {
   background: white;
-  border-radius: 1rem;
+  border-radius: 1.5rem;
   padding: 2rem;
-  box-shadow: var(--shadow);
-  margin-bottom: 2rem;
-  border: 1px solid rgba(0,0,0,0.05);
+  box-shadow: var(--shadow-lg);
 }
 
 .card-header {
@@ -422,133 +637,134 @@ export default {
   margin-bottom: 1.5rem;
 }
 
-.card-header h3 {
-  margin: 0;
-  font-size: 1.25rem;
-}
-
-.icon {
+.header-icon {
   font-size: 1.5rem;
 }
 
-.process-stats {
-  display: flex;
-  justify-content: space-around;
-  background: var(--bg-light);
-  padding: 1rem;
-  border-radius: 0.75rem;
-  margin-bottom: 2rem;
+.card-header h3 {
+  font-size: 1.25rem;
+  font-weight: 700;
+  margin: 0;
+  flex: 1;
 }
 
-.stat {
+.process-summary {
+  display: flex;
+  gap: 1rem;
+  margin-bottom: 1.5rem;
+}
+
+.summary-item {
+  flex: 1;
+  background: #F9FAFB;
+  padding: 1rem;
+  border-radius: 0.75rem;
   text-align: center;
 }
 
-.stat .label {
+.summary-item.highlight {
+  background: linear-gradient(135deg, #EEF2FF 0%, #E0E7FF 100%);
+}
+
+.summary-item .label {
   display: block;
   font-size: 0.75rem;
   color: var(--text-light);
   margin-bottom: 0.25rem;
 }
 
-.stat .value {
-  font-weight: 700;
+.summary-item .value {
   font-size: 1.125rem;
+  font-weight: 700;
   color: var(--text-color);
 }
 
-.stat .value.highlight {
+.summary-item.highlight .value {
   color: var(--primary-color);
 }
 
-.stat-divider {
-  width: 1px;
-  background: var(--border-color);
-}
-
-.answer-body {
-  font-size: 1.125rem;
-  line-height: 1.8;
-  color: var(--text-color);
-  margin-bottom: 2rem;
-  white-space: pre-wrap;
-}
-
 .confidence-badge {
-  margin-left: auto;
-  padding: 0.25rem 0.75rem;
-  border-radius: 9999px;
+  padding: 0.375rem 0.75rem;
+  border-radius: 1rem;
   font-size: 0.75rem;
-  font-weight: 700;
+  font-weight: 600;
 }
 
 .confidence-badge.high {
   background: #ECFDF5;
-  color: #059669;
+  color: #10B981;
 }
 
-.citations-area {
+.confidence-badge.medium {
+  background: #FEF3C7;
+  color: #F59E0B;
+}
+
+.confidence-badge.low {
+  background: #FEE2E2;
+  color: #EF4444;
+}
+
+.answer-content {
+  font-size: 1.0625rem;
+  line-height: 1.8;
+  color: var(--text-color);
+  margin-bottom: 1.5rem;
+}
+
+.citations-section {
   border-top: 1px solid var(--border-color);
   padding-top: 1.5rem;
 }
 
-.citations-area h4 {
-  font-size: 0.875rem;
-  color: var(--text-light);
-  text-transform: uppercase;
+.citations-section h4 {
+  font-size: 1rem;
+  font-weight: 600;
   margin-bottom: 1rem;
 }
 
-.citation-box {
-  background: var(--bg-light);
-  padding: 1rem;
-  border-radius: 0.75rem;
-  margin-bottom: 0.75rem;
+.citation-item {
+  background: #F9FAFB;
   border-left: 3px solid var(--primary-color);
+  padding: 1rem;
+  border-radius: 0.5rem;
+  margin-bottom: 0.75rem;
 }
 
 .citation-header {
-  margin-bottom: 0.25rem;
+  display: flex;
+  gap: 0.5rem;
+  margin-bottom: 0.5rem;
 }
 
 .citation-id {
   font-weight: 700;
   color: var(--primary-color);
-  margin-right: 0.5rem;
 }
 
 .citation-title {
-  font-weight: 600;
+  color: var(--text-color);
+  font-weight: 500;
 }
 
-.citation-snippet {
+.citation-text {
   font-size: 0.875rem;
   color: var(--text-light);
-  line-height: 1.5;
+  margin: 0;
 }
 
-.btn-reset {
-  width: 100%;
-  padding: 1rem;
+.action-buttons {
+  display: flex;
+  justify-content: center;
+  margin-top: 1rem;
 }
 
-/* Loading Skeleton */
-.loading-skeleton {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
-  gap: 1.5rem;
-}
-
-.skeleton-card {
-  height: 120px;
-  background: #e2e8f0;
-  border-radius: 1rem;
-  animation: pulse 1.5s infinite;
-}
-
-@keyframes pulse {
-  0% { opacity: 0.6; }
-  50% { opacity: 1; }
-  100% { opacity: 0.6; }
+.spinner {
+  width: 20px;
+  height: 20px;
+  border: 2px solid rgba(255,255,255,0.3);
+  border-top-color: white;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
 }
 </style>

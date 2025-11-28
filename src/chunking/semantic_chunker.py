@@ -194,7 +194,7 @@ If the entire clause represents a single semantic type, return one chunk with al
             
             logger.debug(f"Split {base_id} into {len(chunks)} semantic chunks with LLM-identified types")
             return chunks
-            
+        
         except Exception as e:
             logger.error(f"Error in semantic chunking: {e}. Falling back to single chunk.")
             # Fallback: return original text as single chunk
@@ -202,7 +202,7 @@ If the entire clause represents a single semantic type, return one chunk with al
                 chunk_id=f"{metadata.get('clause_id', 'chunk')}_semantic_0",
                 content=text,
                 semantic_type='general',  # Default to general on error
-                metadata={
+            metadata={
                     **metadata,
                     'llm_identified': False,
                     'fallback_reason': str(e)
@@ -229,8 +229,8 @@ If the entire clause represents a single semantic type, return one chunk with al
             metadata = item.get('metadata', {})
             
             chunks = self.chunk_text(content, metadata)
-            all_chunks.extend(chunks)
-        
+                    all_chunks.extend(chunks)
+                    
         self.chunks = all_chunks
         logger.info(f"✅ Created {len(all_chunks)} semantic chunks from {len(texts)} texts")
         
@@ -239,7 +239,7 @@ If the entire clause represents a single semantic type, return one chunk with al
     def get_statistics(self) -> Dict[str, Any]:
         """
         Get chunking statistics
-        
+            
         Returns:
             Dictionary of statistics
         """

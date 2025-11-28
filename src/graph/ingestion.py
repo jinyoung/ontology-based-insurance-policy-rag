@@ -307,24 +307,24 @@ class PolicyIngestionPipeline:
                 # Only create if we have a valid parent clause
                 if parent_clause_id:
                     try:
-                        session.run("""
-                            MATCH (c:PolicyClause {clauseId: $parent_clause_id})
-                            CREATE (p:ParagraphChunk {
-                                chunkId: $chunk_id,
-                                text: $text,
-                                semanticType: $semantic_type,
-                                embedding: $embedding
-                            })
-                            CREATE (c)-[:HAS_PARAGRAPH]->(p)
-                            """,
-                            parent_clause_id=parent_clause_id,
-                            chunk_id=chunk['chunk_id'],
-                            text=chunk['text'],
-                            semantic_type=semantic_type,
-                            embedding=chunk['embedding']
-                        )
-                        nodes_created += 1
-                        relationships_created += 1
+                session.run("""
+                    MATCH (c:PolicyClause {clauseId: $parent_clause_id})
+                    CREATE (p:ParagraphChunk {
+                        chunkId: $chunk_id,
+                        text: $text,
+                        semanticType: $semantic_type,
+                        embedding: $embedding
+                    })
+                    CREATE (c)-[:HAS_PARAGRAPH]->(p)
+                    """,
+                    parent_clause_id=parent_clause_id,
+                    chunk_id=chunk['chunk_id'],
+                    text=chunk['text'],
+                    semantic_type=semantic_type,
+                    embedding=chunk['embedding']
+                )
+                nodes_created += 1
+                relationships_created += 1
                     except Exception as e:
                         logger.warning(f"Failed to create chunk {chunk['chunk_id']}: {e}")
                         continue

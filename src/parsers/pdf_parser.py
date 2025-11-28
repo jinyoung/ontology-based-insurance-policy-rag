@@ -85,7 +85,7 @@ class PolicyPDFParser:
         
         Args:
             page_num: Specific page number (1-indexed), or None for all pages
-            
+        
         Returns:
             List of table data
         """
@@ -202,8 +202,8 @@ class PolicyPDFParser:
     
     def close(self):
         """Close the PDF document"""
-        self.doc.close()
-        logger.info("PDF document closed")
+            self.doc.close()
+            logger.info("PDF document closed")
     
     def __enter__(self):
         """Context manager entry"""
