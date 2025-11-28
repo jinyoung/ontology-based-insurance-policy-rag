@@ -418,6 +418,16 @@ def main():
         logger.info(f"노드 생성: {stats['nodes_created']}개")
         logger.info("="*80)
         
+        # Step 8: Clean up uploaded file
+        if 'uploads' in str(pdf_file):
+            try:
+                import os
+                if pdf_file.exists():
+                    os.remove(pdf_file)
+                    logger.info(f"🗑️ 업로드된 파일 삭제됨: {pdf_file.name}")
+            except Exception as cleanup_error:
+                logger.warning(f"파일 삭제 실패: {cleanup_error}")
+        
     except Exception as e:
         logger.error(f"❌ Ingestion 실패: {e}")
         import traceback

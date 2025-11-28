@@ -9,9 +9,9 @@ neo4j>=5.14.0
 # py2neo==2021.2.3  # Removed - using only neo4j driver
 
 # Vector Store & Embeddings
-openai==1.7.2
-sentence-transformers==2.2.2
-faiss-cpu==1.7.4
+openai>=1.7.2
+sentence-transformers>=2.2.2
+faiss-cpu>=1.8.0
 
 # PDF Processing
 PyMuPDF==1.23.8

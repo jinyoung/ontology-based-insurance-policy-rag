@@ -102,36 +102,7 @@
 
       <!-- Query Result -->
       <div v-if="queryResult" class="result-section">
-        <!-- Process Visualization -->
-        <div class="process-card">
-          <div class="card-header">
-            <span class="header-icon">🌲</span>
-            <h3>추론 과정</h3>
-          </div>
-          
-          <div class="process-summary">
-            <div class="summary-item">
-              <span class="label">검색된 후보</span>
-              <span class="value">{{ queryResult.process?.candidates_count || 0 }}개</span>
-            </div>
-            <div class="summary-item highlight">
-              <span class="label">선택된 조항</span>
-              <span class="value">{{ queryResult.process?.selected_article?.id }}</span>
-            </div>
-            <div class="summary-item">
-              <span class="label">참조 조항</span>
-              <span class="value">{{ queryResult.process?.references || 0 }}개</span>
-            </div>
-          </div>
-          
-          <GraphVisualization 
-            v-if="queryResult.process?.sources"
-            :sources="queryResult.process.sources" 
-            :selectedArticle="queryResult.process.selected_article" 
-          />
-        </div>
-
-        <!-- Answer -->
+        <!-- Answer First -->
         <div class="answer-card">
           <div class="card-header">
             <span class="header-icon">✨</span>
@@ -141,9 +112,7 @@
             </span>
           </div>
           
-          <div class="answer-content">
-            <p>{{ queryResult.answer }}</p>
-          </div>
+          <div class="answer-content markdown-body" v-html="renderMarkdown(queryResult.answer)"></div>
           
           <div v-if="queryResult.citations?.length > 0" class="citations-section">
             <h4>📚 참조 근거</h4>
@@ -157,6 +126,38 @@
           </div>
         </div>
 
+        <!-- Process Visualization Below -->
+        <div class="process-card">
+          <div class="card-header collapsible" @click="showProcess = !showProcess">
+            <span class="header-icon">🌲</span>
+            <h3>추론 과정</h3>
+            <span class="toggle-icon">{{ showProcess ? '▲' : '▼' }}</span>
+          </div>
+          
+          <div v-show="showProcess" class="process-body">
+            <div class="process-summary">
+              <div class="summary-item">
+                <span class="label">검색된 후보</span>
+                <span class="value">{{ queryResult.process?.candidates_count || 0 }}개</span>
+              </div>
+              <div class="summary-item highlight">
+                <span class="label">선택된 조항</span>
+                <span class="value">{{ queryResult.process?.selected_article?.id }}</span>
+              </div>
+              <div class="summary-item">
+                <span class="label">참조 조항</span>
+                <span class="value">{{ queryResult.process?.references || 0 }}개</span>
+              </div>
+            </div>
+            
+            <GraphVisualization 
+              v-if="queryResult.process?.sources"
+              :sources="queryResult.process.sources" 
+              :selectedArticle="queryResult.process.selected_article" 
+            />
+          </div>
+        </div>
+
         <div class="action-buttons">
           <button @click="resetQuery" class="btn btn-primary">새로운 질문하기</button>
         </div>
@@ -167,6 +168,7 @@
 
 <script>
 import { ref, onMounted } from 'vue'
+import { marked } from 'marked'
 import api from '../services/api'
 import GraphVisualization from '../components/GraphVisualization.vue'
 
@@ -185,6 +187,7 @@ export default {
     const completedSteps = ref([])
     const stepDetail = ref('')
     const stepData = ref({})
+    const showProcess = ref(true)  // Toggle for process visualization
     
     const processingSteps = [
       { id: 1, name: '질문 분석 및 임베딩 생성' },
@@ -207,6 +210,11 @@ export default {
     const selectRecommendedQuery = (q) => {
       question.value = q
       submitQuery()
+    }
+    
+    const renderMarkdown = (text) => {
+      if (!text) return ''
+      return marked(text)
     }
 
     const submitQuery = async () => {
@@ -323,8 +331,8 @@ export default {
     return {
       question, isLoading, queryResult, recommendedQueries,
       currentStep, currentProgress, completedSteps, stepDetail, stepData,
-      processingSteps,
-      selectRecommendedQuery, submitQuery, resetQuery, getConfidenceClass
+      processingSteps, showProcess,
+      selectRecommendedQuery, submitQuery, resetQuery, getConfidenceClass, renderMarkdown
     }
   }
 }
@@ -637,6 +645,25 @@ export default {
   margin-bottom: 1.5rem;
 }
 
+.card-header.collapsible {
+  cursor: pointer;
+  padding: 0.5rem;
+  margin: -0.5rem;
+  margin-bottom: 0;
+  border-radius: 0.5rem;
+  transition: background 0.2s ease;
+}
+
+.card-header.collapsible:hover {
+  background: var(--bg-light);
+}
+
+.toggle-icon {
+  font-size: 0.75rem;
+  color: var(--text-light);
+  transition: transform 0.2s ease;
+}
+
 .header-icon {
   font-size: 1.5rem;
 }
@@ -646,6 +673,10 @@ export default {
   font-weight: 700;
   margin: 0;
   flex: 1;
+}
+
+.process-body {
+  margin-top: 1rem;
 }
 
 .process-summary {
@@ -710,6 +741,57 @@ export default {
   line-height: 1.8;
   color: var(--text-color);
   margin-bottom: 1.5rem;
+}
+
+/* Markdown Styles */
+.markdown-body :deep(h1),
+.markdown-body :deep(h2),
+.markdown-body :deep(h3) {
+  font-weight: 700;
+  margin-top: 1.5rem;
+  margin-bottom: 1rem;
+  color: var(--text-color);
+}
+
+.markdown-body :deep(h1) { font-size: 1.5rem; }
+.markdown-body :deep(h2) { font-size: 1.25rem; }
+.markdown-body :deep(h3) { font-size: 1.125rem; }
+
+.markdown-body :deep(p) {
+  margin-bottom: 1rem;
+}
+
+.markdown-body :deep(ul), 
+.markdown-body :deep(ol) {
+  margin-bottom: 1rem;
+  padding-left: 1.5rem;
+}
+
+.markdown-body :deep(li) {
+  margin-bottom: 0.5rem;
+}
+
+.markdown-body :deep(strong) {
+  color: var(--primary-color);
+  font-weight: 700;
+}
+
+.markdown-body :deep(blockquote) {
+  border-left: 4px solid var(--primary-color);
+  background: #F9FAFB;
+  padding: 1rem;
+  margin: 1.5rem 0;
+  border-radius: 0 0.5rem 0.5rem 0;
+  color: var(--text-light);
+}
+
+.markdown-body :deep(code) {
+  background: #F3F4F6;
+  padding: 0.2rem 0.4rem;
+  border-radius: 0.25rem;
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-size: 0.875em;
+  color: var(--secondary-color);
 }
 
 .citations-section {

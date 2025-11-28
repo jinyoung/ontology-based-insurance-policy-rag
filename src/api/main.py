@@ -125,17 +125,33 @@ class DetailedQueryResponse(BaseModel):
     process: Optional[Dict[str, Any]] = None  # 탐색 과정 상세 정보
 
 
+# API Key management
+class ApiKeyRequest(BaseModel):
+    api_key: str
+
+
+class ApiKeyStatus(BaseModel):
+    configured: bool
+    masked_key: Optional[str] = None
+
+
 # API endpoints
 @app.on_event("startup")
 async def startup_event():
     """Initialize resources on startup"""
     global qa_engine
+    
+    # Check if API key is configured
+    if not settings.is_configured():
+        logger.warning("⚠️ OpenAI API key not configured. Please set it via /api/v1/config/api-key")
+        return
+    
     try:
         qa_engine = PolicyQAEngine()
         logger.info("✅ QA Engine initialized")
     except Exception as e:
         logger.error(f"Failed to initialize QA engine: {e}")
-        raise
+        # Don't raise - allow app to start for API key configuration
 
 
 @app.on_event("shutdown")
@@ -165,6 +181,63 @@ async def health():
         "version": "1.0.0",
         "engine_status": "ready" if qa_engine else "not initialized"
     }
+
+
+@app.get("/api/v1/config/status", response_model=ApiKeyStatus)
+async def get_config_status():
+    """Check if API key is configured"""
+    is_configured = settings.is_configured()
+    masked_key = None
+    
+    if is_configured and settings.openai_api_key:
+        # Mask the API key for display
+        key = settings.openai_api_key
+        masked_key = f"{key[:8]}...{key[-4:]}" if len(key) > 12 else "***"
+    
+    return ApiKeyStatus(
+        configured=is_configured,
+        masked_key=masked_key
+    )
+
+
+@app.post("/api/v1/config/api-key")
+async def set_api_key(request: ApiKeyRequest):
+    """Set OpenAI API key"""
+    global qa_engine
+    
+    api_key = request.api_key.strip()
+    
+    if not api_key.startswith("sk-"):
+        raise HTTPException(status_code=400, detail="Invalid API key format")
+    
+    try:
+        # Test the API key
+        from openai import OpenAI
+        client = OpenAI(api_key=api_key)
+        
+        # Simple test call
+        client.models.list()
+        
+        # If successful, update settings
+        settings.set_openai_api_key(api_key)
+        
+        # Initialize QA engine if not already done
+        if not qa_engine:
+            try:
+                qa_engine = PolicyQAEngine()
+                logger.info("✅ QA Engine initialized with new API key")
+            except Exception as e:
+                logger.warning(f"QA Engine init failed (may need Neo4j): {e}")
+        
+        return {
+            "status": "success",
+            "message": "API key configured successfully",
+            "engine_status": "ready" if qa_engine else "pending"
+        }
+        
+    except Exception as e:
+        logger.error(f"API key validation failed: {e}")
+        raise HTTPException(status_code=400, detail=f"API key validation failed: {str(e)}")
 
 
 @app.get("/api/v1/health", response_model=HealthResponse)

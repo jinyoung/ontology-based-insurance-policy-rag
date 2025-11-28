@@ -202,8 +202,8 @@ class PolicyPDFParser:
     
     def close(self):
         """Close the PDF document"""
-            self.doc.close()
-            logger.info("PDF document closed")
+        self.doc.close()
+        logger.info("PDF document closed")
     
     def __enter__(self):
         """Context manager entry"""

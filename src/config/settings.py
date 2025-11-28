@@ -3,19 +3,20 @@ Configuration settings for PolicyGraph QA system
 """
 from pydantic_settings import BaseSettings
 from typing import Optional
+import os
 
 
 class Settings(BaseSettings):
     """Application settings"""
     
-    # API Keys
-    openai_api_key: str
+    # API Keys (Optional - can be set at runtime)
+    openai_api_key: Optional[str] = None
     anthropic_api_key: Optional[str] = None
     
     # Neo4j Configuration
     neo4j_uri: str = "bolt://localhost:7687"
     neo4j_username: str = "neo4j"
-    neo4j_password: str
+    neo4j_password: str = "policygraph123"
     
     # Model Configuration
     embedding_model: str = "text-embedding-3-small"
@@ -39,6 +40,15 @@ class Settings(BaseSettings):
     class Config:
         env_file = ".env"
         case_sensitive = False
+    
+    def set_openai_api_key(self, key: str):
+        """Set OpenAI API key at runtime"""
+        self.openai_api_key = key
+        os.environ["OPENAI_API_KEY"] = key
+    
+    def is_configured(self) -> bool:
+        """Check if required API keys are configured"""
+        return bool(self.openai_api_key)
 
 
 settings = Settings()

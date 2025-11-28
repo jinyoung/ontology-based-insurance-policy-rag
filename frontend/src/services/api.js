@@ -17,6 +17,17 @@ export default {
     return response.data
   },
 
+  // API Key Configuration
+  async getConfigStatus() {
+    const response = await api.get('/config/status')
+    return response.data
+  },
+
+  async setApiKey(apiKey) {
+    const response = await api.post('/config/api-key', { api_key: apiKey })
+    return response.data
+  },
+
   // Upload PDF
   async uploadPDF(file) {
     const formData = new FormData()
