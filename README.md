@@ -1,5 +1,7 @@
 # PolicyGraph QA (MVP)
 
+[![YouTube Video](https://img.youtube.com/vi/cTvGHJYIwBw/0.jpg)](https://www.youtube.com/watch?v=cTvGHJYIwBw)
+
 보험약관 GraphRAG QA 시스템 - LangChain + LangGraph + Neo4j + UV Embeddings
 
 ## 📋 프로젝트 개요
@@ -63,6 +65,15 @@ python -m src.api.main
 
 API는 `http://localhost:8000`에서 실행됩니다.
 
+### 5. 프론트엔드 실행
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+
 ## 📚 사용 예시
 
 ### QA 질의
@@ -114,9 +125,11 @@ fin_graphRAG/
 - ✅ 응답 시간 < 3초
 - ✅ 재현 가능한 GraphRAG QA
 
-## 📖 문서
+## 📖 문서 및 참고 자료
 
-자세한 내용은 [PRD.md](PRD.md)를 참조하세요.
+- **프로젝트 문서**: [PRD.md](PRD.md)
+- **참고 자료 (PDF)**: [Intelligent Policy Graphs](doc/Intelligent_Policy_Graphs.pdf)
+- **참고 영상**: [YouTube Link](https://youtu.be/cTvGHJYIwBw)
 
 ## 🛠️ 기술 스택
 
